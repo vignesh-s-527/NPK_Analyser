@@ -22,7 +22,8 @@ class FarmMediaService {
     final paths = <String>[];
     for (final photo in selected) {
       final ext = p.extension(photo.path).toLowerCase();
-      final name = '${DateTime.now().microsecondsSinceEpoch}_${paths.length}${ext.isEmpty ? '.jpg' : ext}';
+      final name =
+          '${DateTime.now().microsecondsSinceEpoch}_${paths.length}${ext.isEmpty ? '.jpg' : ext}';
       final target = File(p.join(photoDir.path, name));
       await File(photo.path).copy(target.path);
       paths.add(target.path);

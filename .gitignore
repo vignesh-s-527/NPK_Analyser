@@ -26,3 +26,4 @@ android/key.properties
 *.keystore
 ios/Flutter/Generated.xcconfig
 ios/Flutter/flutter_export_environment.sh
+android/.kotlin/
