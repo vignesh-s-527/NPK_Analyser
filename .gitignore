@@ -1,0 +1,28 @@
+# Flutter/Dart tooling output
+.dart_tool/
+.packages
+.pub/
+.pub-cache/
+build/
+coverage/
+.flutter-plugins
+.flutter-plugins-dependencies
+.flutter-plugins-dependencies.tmp
+
+# IDE and OS files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Local machine configuration and signing secrets
+.env
+.env.*
+!.env.example
+android/local.properties
+android/key.properties
+*.jks
+*.keystore
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
