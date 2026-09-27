@@ -27,3 +27,8 @@ android/key.properties
 ios/Flutter/Generated.xcconfig
 ios/Flutter/flutter_export_environment.sh
 android/.kotlin/
+
+# Optional FastAPI backend
+backend/.venv/
+backend/**/__pycache__/
+.pytest_cache/
