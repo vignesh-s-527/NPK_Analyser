@@ -30,5 +30,7 @@ android/.kotlin/
 
 # Optional FastAPI backend
 backend/.venv/
+backend/data/
 backend/**/__pycache__/
 .pytest_cache/
+.pytest-tmp/

@@ -1,51 +1,71 @@
-# FastAPI contract
+# FastAPI API contract
 
-Base URL is `http://127.0.0.1:8000` for local development. Deploy behind HTTPS for real farmer data. JSON requests reject unknown fields. Concentrations currently use `mg/kg`; the analyzer protocol must confirm what its measurements represent before interpreting them.
+Local base URL: `http://127.0.0.1:8000`. Nutrients must be finite, nonnegative JSON numbers with a required `unit` of `mg/kg`. No upper concentration threshold is imposed because sensor calibration is unspecified. JSON requests reject unknown fields. The backend does not convert raw sensor signals into NPK values.
 
-## Health
-
-`GET /health`
+## `GET /health`
 
 ```json
 {"status":"ok","service":"npk-analyzer-api"}
 ```
 
-## Submit a reading
+## `POST /v1/readings`
 
-`POST /v1/readings` returns HTTP 201. Each nutrient must be a finite number from 0 to 100000, and unit must be `mg/kg`.
-
-```json
-{"nitrogen":42,"phosphorus":18,"potassium":95,"unit":"mg/kg"}
-```
-
-Example response:
+Accepts separate nitrogen, phosphorus, and potassium values. `measured_at` (timezone-aware ISO-8601), `sensor_id`, `source` (`device`, `simulated`, or `manual`), `crop`, `soil_ph`, `soil_texture`, and `region` are optional metadata.
 
 ```json
-{"nitrogen":42,"phosphorus":18,"potassium":95,"unit":"mg/kg","received_at":"2026-09-27T10:00:00Z"}
+{"nitrogen":42,"phosphorus":18,"potassium":95,"unit":"mg/kg","measured_at":"2026-09-27T10:00:00Z","sensor_id":"demo-01","source":"simulated"}
 ```
 
-Invalid input returns FastAPI HTTP 422 with field-level validation details. This endpoint validates and timestamps the readings; it does not calculate concentration from raw sensor signals or persist history.
+Returns HTTP 201 with a `reading_id` UUID, `measured_at`, and server `received_at`. Optional crop and soil metadata is stored with the reading. If `measured_at` is omitted, receive time is used. Readings persist in a bounded SQLite database (1,000 latest rows by default). Set `NPK_DATABASE_PATH` to select its file. This local, single-user store has no account isolation and is not suitable for a multi-user public deployment.
 
-## Compare against reference tolerance
+## `GET /v1/readings` and `GET /v1/readings/{reading_id}`
 
-`POST /v1/validate` compares each reported concentration to a reference and passes when absolute error is less than or equal to `tolerance_mg_kg`.
+The list route accepts `limit` (1–200, default 50) and `offset` (default 0) and returns `{ "items": [...], "total": 1, "limit": 50, "offset": 0 }`. A missing ID returns 404; a malformed UUID returns 422.
+
+## `POST /v1/validate`
+
+Measured and reference readings both require N, P, K and unit. Supply exactly one tolerance form. Common tolerance:
 
 ```json
-{"measured":{"nitrogen":42,"phosphorus":18,"potassium":95},"reference":{"nitrogen":40,"phosphorus":18,"potassium":90},"tolerance_mg_kg":5}
+{"measured":{"nitrogen":42,"phosphorus":18,"potassium":95,"unit":"mg/kg"},"reference":{"nitrogen":40,"phosphorus":18,"potassium":90,"unit":"mg/kg"},"tolerance_mg_kg":5}
 ```
 
-The output includes per-nutrient measured value, reference, absolute error and `within_tolerance`, plus aggregate `passed`. This is a software comparison rule, not a claim about instrument accuracy.
+Or per-nutrient tolerance:
 
-## Fertilizer advice
+```json
+{"measured":{"nitrogen":42,"phosphorus":18,"potassium":95,"unit":"mg/kg"},"reference":{"nitrogen":40,"phosphorus":18,"potassium":90,"unit":"mg/kg"},"tolerances_mg_kg":{"nitrogen":2,"phosphorus":1,"potassium":4}}
+```
 
-`POST /v1/recommendations` accepts NPK and optional crop, region, soil-test method, soil pH, organic matter percentage, texture, crop stage, field area, prior fertilizer, and whether results came from a laboratory test. `backend/app/recommendations.py` contains the calibrated-rule interface; its verified rule registry is empty because the deployment region, sensor method and local calibration data are unknown. Until a source-backed rule matches the exact crop, region and test method, it returns no fertilizer quantities and lists missing information. A displayed NPK concentration alone cannot establish deficiency or excess.
+Returns the absolute error, applied tolerance and inclusive pass flag for each nutrient, plus aggregate `passed`. It compares reported values; it does not certify sensor accuracy.
 
-## Agricultural assistant
+## `POST /v1/recommendations`
 
-`POST /v1/assistant` accepts `{ "question": "...", "language": "en", "reading": {"nitrogen":42,"phosphorus":18,"potassium":95}, "crop":"Rice" }`. Responses include `answer`, `sources`, `insufficient_information`, `answer_type` (`general_information`, `contextual`, or `insufficient_information`), and `context_used`. Retrieval uses the small, cited knowledge list in `backend/app/main.py`; generation is constrained to retrieved text and supplied farmer context. Source metadata comes from retrieval rather than model-generated citations. If no passage matches, the service returns an insufficient-information response without calling Ollama. If matching context exists but Ollama is unavailable, the service returns HTTP 503.
+Requires NPK and unit. Optional fields: `crop`, `crop_stage`, `region`, `soil_test_method`, `soil_ph`, `soil_organic_matter_percent`, `soil_texture`, `field_area_ha`, `expected_yield`, `previous_fertilizer`, and `laboratory_test`.
 
-Set `OLLAMA_URL` (default `http://127.0.0.1:11434`) and `OLLAMA_MODEL` (default `llama3.2:1b`). Pull the model separately with `ollama pull llama3.2:1b`. Model answer quality and hardware speed have not been benchmarked. The small retrieval index is a starter knowledge base, not comprehensive local agronomy guidance.
+`backend/app/recommendations.py` provides a source-backed rule interface. The verified registry is empty because deployment region, sensor calibration and local soil-test method are not specified. It returns `recommendation_status: "insufficient_local_calibration"`, empty fertilizer quantities, and missing information. No deficiency/excess diagnosis or rate is inferred from concentrations alone.
 
-## Actual validation status
+## `POST /v1/assistant`
 
-Flutter adapter tests and Dart analysis were executed in the workspace. Backend pytest tests are present, but could not be executed in this environment because neither `python` nor `py` was runnable. Run `python -m pytest` from `backend/` in a Python 3.10+ environment before relying on the API.
+Request fields: `question`, optional `language` (`en` or `ta`), optional `reading` (NPK plus unit), `crop`, and a previous `recommendation` response.
+
+```json
+{"question":"Why do fertilizer recommendations need local soil-test calibration?","language":"en","reading":{"nitrogen":42,"phosphorus":18,"potassium":95,"unit":"mg/kg"},"crop":"Rice"}
+```
+
+The response contains `answer`, `sources`, `insufficient_information`, `answer_type` (`general_information`, `contextual`, or `insufficient_information`), `context_used`, and `provider_status` (`ollama_generated` or `knowledge_fallback`). The small attributed index is in `backend/app/knowledge.py`. With no matching passage, the API returns an insufficient-information answer without calling Ollama. With a match but unavailable Ollama, it returns HTTP 503. Prompting asks the model to stay within retrieved facts and avoid unsupported rates/citations; this is not a technical guarantee against hallucination. Source metadata is selected by retrieval and returned separately. The English knowledge passages and Tamil generation have not been evaluated.
+
+## Errors, CORS and configuration
+
+Validation failures use HTTP 422 with stable `detail` and field-level `errors`, without echoing submitted values. HTTP errors include string `detail` and `error.code`/`error.message`. Unexpected failures return a generic HTTP 500 body; details remain server-side. Responses include `X-Request-ID`.
+
+- `OLLAMA_URL` defaults to `http://127.0.0.1:11434`.
+- `OLLAMA_MODEL` defaults to `llama3.2:1b`.
+- `CORS_ORIGIN_REGEX` defaults to HTTP(S) localhost/loopback with optional port.
+- `LOG_LEVEL` defaults to `INFO`.
+- `NPK_DATABASE_PATH` defaults to `backend/data/readings.sqlite3`.
+
+Native mobile HTTP clients do not enforce browser CORS. For production, use HTTPS, authentication, narrowly scoped CORS and persistent user-scoped storage. The local SQLite store is not multi-user safe.
+
+`backend/app/providers.py` defines optional typed image-observation and expert-messaging protocols; no upload route, image model, or expert provider is active. The image response contract labels outputs as visual observations and fixes `measures_npk=false`. A future upload route must enforce streamed content-type and size limits.
+
+Backend tests are in `backend/tests`. From `backend/`, install dependencies with `python -m pip install -r requirements.txt`, then run `python -m pytest`.

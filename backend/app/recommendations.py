@@ -20,6 +20,8 @@ class RecommendationContext:
     region: str | None
     soil_test_method: str | None
     field_area_ha: float | None
+    expected_yield: float | None
+    crop_stage: str | None
     soil_ph: float | None
     soil_organic_matter_percent: float | None
     soil_texture: str | None
@@ -65,6 +67,8 @@ def recommend(
         missing.append("growing region")
     if not context.soil_test_method:
         missing.append("soil-test method")
+    if not context.laboratory_test:
+        missing.append("validated laboratory soil-test result")
     if context.soil_ph is None:
         missing.append("soil pH")
     if context.soil_organic_matter_percent is None:
@@ -73,6 +77,8 @@ def recommend(
         missing.append("soil texture")
     if context.field_area_ha is None:
         missing.append("field area")
+    if context.expected_yield is None:
+        missing.append("expected yield")
     if not context.previous_fertilizer:
         missing.append("nutrient credits from prior fertilizer, manure and residues")
     nutrients = {
