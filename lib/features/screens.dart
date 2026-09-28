@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -15,12 +16,16 @@ class HomeScreen extends StatefulWidget {
   final FarmingCalendarService? calendarService;
   final CropRecommendationService? recommendationService;
   final FarmingReminderService? reminderService;
+  final NpkDeviceService? npkDevice;
+  final ReadingSubmissionService? readingSubmission;
   const HomeScreen(
       {super.key,
       this.weatherService,
       this.calendarService,
       this.recommendationService,
-      this.reminderService});
+      this.reminderService,
+      this.npkDevice,
+      this.readingSubmission});
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -85,7 +90,8 @@ class _HomeScreenState extends State<HomeScreen> {
           final row = t.first;
           latest = NpkResult((row['n'] as num).toDouble(),
               (row['p'] as num).toDouble(), (row['k'] as num).toDouble(),
-              unit: row['unit'] as String);
+              unit: row['unit'] as String,
+              source: row['source'] as String? ?? 'manual');
         }
         final profile = await store.profile();
         recommendations = await widget.recommendationService!
@@ -114,15 +120,18 @@ class _HomeScreenState extends State<HomeScreen> {
                 body: farms.isEmpty
                     ? 'No farms yet. Add a farm and field to get started.'
                     : '${farms.length} farms | $fieldCount fields',
-                onTap: () => _open(const FarmManagementScreen())),
+                onTap: () => _open(FarmManagementScreen(
+                    readingSubmission: widget.readingSubmission))),
             if (farms.isEmpty)
               Wrap(spacing: 10, children: [
                 FilledButton.icon(
-                    onPressed: () => _open(const FarmManagementScreen()),
+                    onPressed: () => _open(FarmManagementScreen(
+                        readingSubmission: widget.readingSubmission)),
                     icon: const Icon(Icons.add),
                     label: const AppText('Add farm')),
                 OutlinedButton.icon(
-                    onPressed: () => _open(const FarmManagementScreen()),
+                    onPressed: () => _open(FarmManagementScreen(
+                        readingSubmission: widget.readingSubmission)),
                     icon: const Icon(Icons.crop_square),
                     label: const AppText('Add field')),
               ]),
@@ -131,16 +140,20 @@ class _HomeScreenState extends State<HomeScreen> {
                   icon: Icons.science,
                   title: 'Latest soil results',
                   body: 'Saved soil results will appear here.',
-                  onTap: () => _open(const SoilScreen()))
+                  onTap: () => _open(SoilScreen(
+                      service: widget.npkDevice,
+                      readingSubmission: widget.readingSubmission)))
             else
               ...tests.map((t) => _Card(
                   icon: Icons.science,
                   title:
                       '${t['field_name']} | ${DateTime.parse(t['tested_at'] as String).toLocal()}',
-                  body: 'N ${t['n']} | P ${t['p']} | K ${t['k']} ${t['unit']}',
+                  body:
+                      'N ${t['n']} | P ${t['p']} | K ${t['k']} ${t['unit']}${t['source'] == 'simulated' ? ' · SIMULATED DEMO' : ''}',
                   onTap: () => _open(FieldHistoryScreen(
                       fieldId: t['field_id'] as int,
-                      fieldName: t['field_name'] as String)))),
+                      fieldName: t['field_name'] as String,
+                      submissionService: widget.readingSubmission)))),
             if (weather == null)
               _Card(
                   icon: Icons.cloud_outlined,
@@ -455,7 +468,8 @@ Future<void> _showCalendarEvent(BuildContext context, CalendarEvent event,
 
 class SoilScreen extends StatefulWidget {
   final NpkDeviceService? service;
-  const SoilScreen({super.key, this.service});
+  final ReadingSubmissionService? readingSubmission;
+  const SoilScreen({super.key, this.service, this.readingSubmission});
   @override
   State<SoilScreen> createState() => _SoilScreenState();
 }
@@ -575,6 +589,13 @@ class _SoilScreenState extends State<SoilScreen> {
     }
     if (event is TestSucceeded) {
       if (mounted) setState(() => testing = false);
+      if (!event.result.isValid) {
+        if (mounted) {
+          setState(() => statusError =
+              'The analyzer returned an invalid reading. No result was saved.');
+        }
+        return;
+      }
       final target = fieldId;
       if (target == null) {
         if (mounted)
@@ -582,12 +603,16 @@ class _SoilScreenState extends State<SoilScreen> {
               'Choose a field before starting a test. This result was not saved.');
         return;
       }
+      final isSimulated = event.result.source == 'simulated';
+      final measuredAt = DateTime.now().toUtc();
       final save = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
                   title: const AppText('Save soil test?'),
                   content: AppText(
-                      'N ${event.result.nitrogen} · P ${event.result.phosphorus} · K ${event.result.potassium} ${event.result.unit}\n\nSave this successful result to the selected field?'),
+                      'N ${event.result.nitrogen} · P ${event.result.phosphorus} · K ${event.result.potassium} ${event.result.unit}'
+                      '${isSimulated ? '\n\nThis is a simulated demo reading, not a measurement from a real analyzer.' : ''}'
+                      '\n\nSave this successful result to the selected field?'),
                   actions: [
                     TextButton(
                         onPressed: () => Navigator.pop(ctx, false),
@@ -596,13 +621,32 @@ class _SoilScreenState extends State<SoilScreen> {
                         onPressed: () => Navigator.pop(ctx, true),
                         child: const AppText('Save result'))
                   ]));
-      if (save == true)
-        await LocalStore.instance.saveTest(
+      if (save == true) {
+        final testId = await LocalStore.instance.saveTest(
             fieldId: target,
             n: event.result.nitrogen,
             p: event.result.phosphorus,
             k: event.result.potassium,
-            unit: event.result.unit);
+            unit: event.result.unit,
+            testedAt: measuredAt,
+            source: event.result.source);
+        final submission = widget.readingSubmission;
+        if (submission != null) {
+          try {
+            final remoteId = await submission.submitReading(event.result,
+                measuredAt: measuredAt);
+            await LocalStore.instance.markTestSynced(testId, remoteId);
+            if (mounted) {
+              _notice(context, 'Saved on this device and sent to the backend.');
+            }
+          } catch (_) {
+            if (mounted) {
+              _notice(context,
+                  'Saved on this device, but not sent to the backend. You can retry from field history.');
+            }
+          }
+        }
+      }
       if (mounted) setState(() => statusError = null);
     }
   }
@@ -612,6 +656,14 @@ class _SoilScreenState extends State<SoilScreen> {
         title: 'Soil testing',
         subtitle: 'Connect your analyzer and test a field',
         children: [
+          if (widget.service?.isSimulator ?? false)
+            Card(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                child: const ListTile(
+                    leading: Icon(Icons.science_outlined),
+                    title: AppText('Demo mode: simulated readings'),
+                    subtitle: AppText(
+                        'These demonstration values are not measurements from a real analyzer.'))),
           DropdownButtonFormField<int>(
             initialValue: fieldId,
             decoration: InputDecoration(
@@ -674,7 +726,9 @@ class _SoilScreenState extends State<SoilScreen> {
             Card(
               child: ListTile(
                 leading: const Icon(Icons.sensors),
-                title: const AppText('Device connected'),
+                title: AppText(widget.service?.isSimulator == true
+                    ? 'Demo analyzer connected'
+                    : 'Device connected'),
                 subtitle: AppText(
                   connection?.batteryPercent == null
                       ? 'Ready to test'
@@ -729,7 +783,8 @@ class _SoilScreenState extends State<SoilScreen> {
                   'Create a farm and field in Profile before saving soil test results.',
               onTap: () async {
                 await Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => const FarmManagementScreen()));
+                    builder: (_) => FarmManagementScreen(
+                        readingSubmission: widget.readingSubmission)));
                 if (mounted) _loadFields();
               },
             ),
@@ -749,7 +804,8 @@ class _SoilScreenState extends State<SoilScreen> {
                     Navigator.of(context).push(MaterialPageRoute<void>(
                         builder: (_) => FieldHistoryScreen(
                             fieldId: fieldId!,
-                            fieldName: field['name'] as String)));
+                            fieldName: field['name'] as String,
+                            submissionService: widget.readingSubmission)));
                   },
           ),
           if (fieldId == null)
@@ -758,7 +814,8 @@ class _SoilScreenState extends State<SoilScreen> {
                 child: OutlinedButton.icon(
                     onPressed: () async {
                       await Navigator.of(context).push(MaterialPageRoute<void>(
-                          builder: (_) => const FarmManagementScreen()));
+                          builder: (_) => FarmManagementScreen(
+                              readingSubmission: widget.readingSubmission)));
                       if (mounted) _loadFields();
                     },
                     icon: const Icon(Icons.add),
@@ -769,13 +826,17 @@ class _SoilScreenState extends State<SoilScreen> {
 
 class CropsScreen extends StatefulWidget {
   final CropRecommendationService? recommendationService;
+  final FertilizerAdviceService? fertilizerAdviceService;
   final FarmingCalendarService? calendarService;
   final FarmingReminderService? reminderService;
+  final ReadingSubmissionService? readingSubmission;
   const CropsScreen(
       {super.key,
       this.recommendationService,
+      this.fertilizerAdviceService,
       this.calendarService,
-      this.reminderService});
+      this.reminderService,
+      this.readingSubmission});
   @override
   State<CropsScreen> createState() => _CropsScreenState();
 }
@@ -794,6 +855,7 @@ class _CropsScreenState extends State<CropsScreen> {
   ];
   List<Map<String, Object?>> farms = [], selected = [];
   List<CropEstimate> estimates = [];
+  FertilizerAdvice? fertilizerAdvice;
   List<CalendarEvent> events = [];
   int? farmId;
   bool recommendationError = false, calendarError = false;
@@ -813,6 +875,7 @@ class _CropsScreenState extends State<CropsScreen> {
         ? <Map<String, Object?>>[]
         : await store.crops(selectedId);
     List<CropEstimate> recs = [];
+    FertilizerAdvice? nutrientAdvice;
     List<CalendarEvent> calendarEvents = [];
     var recFailed = false, calendarFailed = false;
     if (selectedId != null && widget.recommendationService != null) {
@@ -831,6 +894,29 @@ class _CropsScreenState extends State<CropsScreen> {
         final profile = await store.profile();
         recs = await widget.recommendationService!
             .recommend((profile?['language'] as String?) ?? 'en', soil);
+      } catch (_) {
+        recFailed = true;
+      }
+    }
+    if (selectedId != null && widget.fertilizerAdviceService != null) {
+      try {
+        for (final field in await store.fields(selectedId)) {
+          final history = await store.testHistory(field['id'] as int);
+          if (history.isNotEmpty) {
+            final row = history.last;
+            nutrientAdvice = await widget.fertilizerAdviceService!.recommend(
+              NpkResult(
+                (row['n'] as num).toDouble(),
+                (row['p'] as num).toDouble(),
+                (row['k'] as num).toDouble(),
+                unit: row['unit'] as String,
+                source: row['source'] as String? ?? 'manual',
+              ),
+              crop: cropRows.isEmpty ? null : cropRows.first['crop'] as String,
+            );
+            break;
+          }
+        }
       } catch (_) {
         recFailed = true;
       }
@@ -854,6 +940,7 @@ class _CropsScreenState extends State<CropsScreen> {
         farmId = selectedId;
         selected = cropRows;
         estimates = recs;
+        fertilizerAdvice = nutrientAdvice;
         events = calendarEvents;
         recommendationError = recFailed;
         calendarError = calendarFailed;
@@ -893,7 +980,8 @@ class _CropsScreenState extends State<CropsScreen> {
                   body: 'Create a farm in Profile to save crop selections.',
                   onTap: () async {
                     await Navigator.of(context).push(MaterialPageRoute<void>(
-                        builder: (_) => const FarmManagementScreen()));
+                        builder: (_) => FarmManagementScreen(
+                            readingSubmission: widget.readingSubmission)));
                     if (mounted) _load();
                   })
             else
@@ -960,6 +1048,40 @@ class _CropsScreenState extends State<CropsScreen> {
                   onTap: _load)
             else
               ...estimates.map(_estimateTile),
+            if (widget.fertilizerAdviceService != null)
+              if (fertilizerAdvice == null)
+                const _Card(
+                    icon: Icons.science_outlined,
+                    title: 'Fertilizer advice',
+                    body:
+                        'Save a soil reading to request advice. The app will not show fertilizer quantities without verified local calibration.')
+              else
+                Card(
+                    child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              AppText(
+                                  'Fertilizer advice · ${fertilizerAdvice!.status}',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 8),
+                              const AppText(
+                                  'No fertilizer quantities are shown because verified local crop and soil calibration is not configured.'),
+                              ...fertilizerAdvice!.advice.map((line) =>
+                                  ListTile(
+                                      dense: true,
+                                      leading: const Icon(Icons.info_outline),
+                                      title: AppText(line))),
+                              if (fertilizerAdvice!
+                                  .additionalInformation.isNotEmpty)
+                                AppText(
+                                    'Information needed: ${fertilizerAdvice!.additionalInformation.join(', ')}'),
+                              if (fertilizerAdvice!.sources.isNotEmpty)
+                                AppText(
+                                    'Sources: ${fertilizerAdvice!.sources.join(', ')}')
+                            ]))),
             if (widget.calendarService == null)
               _Card(
                   icon: Icons.calendar_month,
@@ -1025,6 +1147,38 @@ class _AssistantScreenState extends State<AssistantScreen> {
   bool sending = false, listening = false;
   String? lastQuestion;
 
+  @override
+  void initState() {
+    super.initState();
+    _loadMessages();
+  }
+
+  Future<void> _loadMessages() async {
+    final rows = await LocalStore.instance.chatMessages();
+    final restored = <_ChatItem>[];
+    for (final row in rows) {
+      if (row['role'] == 'farmer') {
+        restored.add(_ChatItem.question(row['content'] as String));
+      } else {
+        List<String> sources = const [];
+        try {
+          final decoded = jsonDecode(row['sources'] as String);
+          if (decoded is List) sources = decoded.whereType<String>().toList();
+        } on FormatException {
+          // Ignore malformed optional source metadata; keep the answer text.
+        }
+        restored.add(_ChatItem.answer(AssistantReply(
+          row['content'] as String,
+          sources,
+          row['answer_type'] as String? ?? 'general_information',
+          row['provider_status'] as String? ?? 'unknown',
+          (row['insufficient_information'] as int? ?? 0) == 1,
+        )));
+      }
+    }
+    if (mounted) setState(() => messages.addAll(restored));
+  }
+
   Future<String> _language() async {
     final profile = await LocalStore.instance.profile();
     return (profile?['language'] as String?) ?? 'en';
@@ -1041,6 +1195,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
       lastQuestion = question;
     });
     try {
+      await LocalStore.instance
+          .addChatMessage(role: 'farmer', content: question);
       final language = await _language();
       AssistantReply? latest;
       await for (final reply in service.ask(question, language)) {
@@ -1048,6 +1204,14 @@ class _AssistantScreenState extends State<AssistantScreen> {
       }
       final answer = latest;
       if (answer == null) throw StateError('Assistant returned no response');
+      await LocalStore.instance.addChatMessage(
+        role: 'assistant',
+        content: answer.text,
+        sources: answer.sources,
+        answerType: answer.answerType,
+        providerStatus: answer.providerStatus,
+        insufficientInformation: answer.insufficientInformation,
+      );
       if (mounted) setState(() => messages.add(_ChatItem.answer(answer)));
       await tts.setLanguage(language == 'ta' ? 'ta-IN' : 'en-US');
       await tts.speak(answer.text);
@@ -1126,6 +1290,14 @@ class _AssistantScreenState extends State<AssistantScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  AppText(
+                      reply.providerStatus == 'knowledge_fallback'
+                          ? 'Insufficient information · safe fallback'
+                          : reply.providerStatus == 'ollama_generated'
+                              ? 'AI-generated answer · check the listed sources'
+                              : 'Answer status unavailable',
+                      style: Theme.of(context).textTheme.labelSmall),
+                  const SizedBox(height: 4),
                   AppText(reply.text, translate: false),
                   if (reply.sources.isNotEmpty)
                     Padding(
@@ -1223,12 +1395,14 @@ class ProfileScreen extends StatefulWidget {
   final bool remindersConnected;
   final FarmingCalendarService? calendarService;
   final FarmingReminderService? reminderService;
+  final ReadingSubmissionService? readingSubmission;
   const ProfileScreen({
     super.key,
     this.calendarConnected = false,
     this.remindersConnected = false,
     this.calendarService,
     this.reminderService,
+    this.readingSubmission,
   });
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -1337,7 +1511,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     subtitle:
                         const AppText('Manage farms, fields and locations'),
                     trailing: const Icon(Icons.chevron_right),
-                    onTap: () => _open(const FarmManagementScreen()))),
+                    onTap: () => _open(FarmManagementScreen(
+                        readingSubmission: widget.readingSubmission)))),
             Card(
                 child: ListTile(
                     leading: const CircleAvatar(child: Icon(Icons.bluetooth)),
@@ -1434,7 +1609,8 @@ class NotificationsScreen extends StatelessWidget {
 }
 
 class FarmManagementScreen extends StatefulWidget {
-  const FarmManagementScreen({super.key});
+  final ReadingSubmissionService? readingSubmission;
+  const FarmManagementScreen({super.key, this.readingSubmission});
   @override
   State<FarmManagementScreen> createState() => _FarmManagementScreenState();
 }
@@ -1626,12 +1802,12 @@ class _FarmManagementScreenState extends State<FarmManagementScreen> {
                                             onTap: () => Navigator.push(
                                                 context,
                                                 MaterialPageRoute(
-                                                    builder: (_) =>
-                                                        FieldHistoryScreen(
-                                                            fieldId:
-                                                                f['id'] as int,
-                                                            fieldName: f['name']
-                                                                as String))),
+                                                    builder: (_) => FieldHistoryScreen(
+                                                        fieldId: f['id'] as int,
+                                                        fieldName:
+                                                            f['name'] as String,
+                                                        submissionService: widget
+                                                            .readingSubmission))),
                                             leading:
                                                 const Icon(Icons.crop_square),
                                             title: AppText(f['name'] as String,
@@ -1897,7 +2073,7 @@ class _LocalDataScreenState extends State<LocalDataScreen> {
   bool clearing = false;
   Future<void> _clear() async {
     if (!await _confirm(context,
-        'Delete all farms, fields, photos, saved devices, crop selections and soil-test history from this device? This cannot be undone.'))
+        'Delete all farms, fields, photos, saved devices, crop selections, soil-test history and assistant conversations from this device? This cannot be undone.'))
       return;
     setState(() => clearing = true);
     final store = LocalStore.instance;
@@ -1918,7 +2094,7 @@ class _LocalDataScreenState extends State<LocalDataScreen> {
       appBar: AppBar(title: const AppText('Local data')),
       body: ListView(padding: const EdgeInsets.all(20), children: [
         const AppText(
-            'Farm records, photos, crop selections, saved devices and soil history are stored only on this device.'),
+            'Farm records, photos, crop selections, saved devices, soil history and assistant conversations are stored only on this device.'),
         const SizedBox(height: 20),
         FilledButton.tonalIcon(
             onPressed: clearing ? null : _clear,
@@ -1944,8 +2120,12 @@ Future<bool> _confirm(BuildContext context, String message) async =>
 class FieldHistoryScreen extends StatefulWidget {
   final int fieldId;
   final String fieldName;
+  final ReadingSubmissionService? submissionService;
   const FieldHistoryScreen(
-      {super.key, required this.fieldId, required this.fieldName});
+      {super.key,
+      required this.fieldId,
+      required this.fieldName,
+      this.submissionService});
   @override
   State<FieldHistoryScreen> createState() => _FieldHistoryScreenState();
 }
@@ -2011,6 +2191,30 @@ class _FieldHistoryScreenState extends State<FieldHistoryScreen> {
     await _load();
   }
 
+  Future<void> _sync(Map<String, Object?> test) async {
+    final service = widget.submissionService;
+    if (service == null) return;
+    final reading = NpkResult(
+      (test['n'] as num).toDouble(),
+      (test['p'] as num).toDouble(),
+      (test['k'] as num).toDouble(),
+      unit: test['unit'] as String,
+      source: test['source'] as String? ?? 'manual',
+    );
+    try {
+      final remoteId = await service.submitReading(reading,
+          measuredAt: DateTime.parse(test['tested_at'] as String));
+      await LocalStore.instance.markTestSynced(test['id'] as int, remoteId);
+      await _load();
+      if (mounted) _notice(context, 'Reading sent to the backend.');
+    } catch (_) {
+      if (mounted) {
+        _notice(context,
+            'The reading is still saved on this device. Check the backend connection and retry.');
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
       appBar: AppBar(title: AppText('${widget.fieldName} history')),
@@ -2021,9 +2225,13 @@ class _FieldHistoryScreenState extends State<FieldHistoryScreen> {
                   child: AppText('No saved tests for this field yet.'))
               : ListView.builder(
                   padding: const EdgeInsets.all(16),
-                  itemCount: tests.length,
+                  itemCount: tests.length + (tests.length > 1 ? 1 : 0),
                   itemBuilder: (ctx, i) {
-                    final t = tests[i];
+                    if (tests.length > 1 && i == 0) {
+                      return _NpkTrendChart(tests: tests);
+                    }
+                    final testIndex = i - (tests.length > 1 ? 1 : 0);
+                    final t = tests[testIndex];
                     final date =
                         DateTime.parse(t['tested_at'] as String).toLocal();
                     return Card(
@@ -2034,7 +2242,7 @@ class _FieldHistoryScreenState extends State<FieldHistoryScreen> {
                                     builder: (_) => SoilResultDetailsScreen(
                                         fieldName: widget.fieldName, test: t))),
                             title: AppText(
-                                '${date.toString().substring(0, 16)} · N ${t['n']}  P ${t['p']}  K ${t['k']} ${t['unit']}'),
+                                '${date.toString().substring(0, 16)} · N ${t['n']}  P ${t['p']}  K ${t['k']} ${t['unit']}${t['source'] == 'simulated' ? ' · SIMULATED DEMO' : ''}'),
                             subtitle: (t['note'] as String).isEmpty
                                 ? const AppText('No note')
                                 : AppText(t['note'] as String,
@@ -2047,8 +2255,16 @@ class _FieldHistoryScreenState extends State<FieldHistoryScreen> {
                                   if (v == 'note') _note(t);
                                   if (v == 'favorite') _favorite(t);
                                   if (v == 'delete') _delete(t['id'] as int);
+                                  if (v == 'sync') _sync(t);
                                 },
                                 itemBuilder: (_) => [
+                                      if ((t['sync_status'] as String? ??
+                                              'local') !=
+                                          'synced')
+                                        const PopupMenuItem(
+                                            value: 'sync',
+                                            child:
+                                                AppText('Retry backend sync')),
                                       const PopupMenuItem(
                                           value: 'note',
                                           child: AppText('Edit note')),
@@ -2063,6 +2279,130 @@ class _FieldHistoryScreenState extends State<FieldHistoryScreen> {
                                           child: AppText('Delete test'))
                                     ])));
                   }));
+}
+
+class _NpkTrendChart extends StatelessWidget {
+  const _NpkTrendChart({required this.tests});
+
+  final List<Map<String, Object?>> tests;
+
+  @override
+  Widget build(BuildContext context) {
+    final first = DateTime.parse(tests.first['tested_at'] as String).toLocal();
+    final last = DateTime.parse(tests.last['tested_at'] as String).toLocal();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const AppText('NPK history trend',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            AppText('Recorded values only · ${tests.first['unit']}'),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 150,
+              width: double.infinity,
+              child: CustomPaint(painter: _NpkTrendPainter(tests)),
+            ),
+            const Wrap(spacing: 16, children: [
+              _ChartLegend(color: Color(0xff2e7d32), label: 'N'),
+              _ChartLegend(color: Color(0xff1565c0), label: 'P'),
+              _ChartLegend(color: Color(0xffef6c00), label: 'K'),
+            ]),
+            const SizedBox(height: 6),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              AppText(first.toString().substring(0, 10)),
+              AppText(last.toString().substring(0, 10)),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ChartLegend extends StatelessWidget {
+  const _ChartLegend({required this.color, required this.label});
+
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 4),
+          AppText(label),
+        ],
+      );
+}
+
+class _NpkTrendPainter extends CustomPainter {
+  _NpkTrendPainter(this.tests);
+
+  final List<Map<String, Object?>> tests;
+  static const colors = [
+    Color(0xff2e7d32),
+    Color(0xff1565c0),
+    Color(0xffef6c00)
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const inset = 10.0;
+    final chart =
+        Rect.fromLTRB(inset, inset, size.width - inset, size.height - inset);
+    final gridPaint = Paint()
+      ..color = const Color(0xffdfe5df)
+      ..strokeWidth = 1;
+    for (var i = 0; i < 4; i++) {
+      final y = chart.top + chart.height * i / 3;
+      canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), gridPaint);
+    }
+
+    final series = [
+      tests.map((row) => (row['n'] as num).toDouble()).toList(),
+      tests.map((row) => (row['p'] as num).toDouble()).toList(),
+      tests.map((row) => (row['k'] as num).toDouble()).toList(),
+    ];
+    var maximum = 1.0;
+    for (final values in series) {
+      for (final value in values) {
+        if (value.isFinite && value > maximum) maximum = value;
+      }
+    }
+    for (var s = 0; s < series.length; s++) {
+      final values = series[s];
+      final path = Path();
+      for (var i = 0; i < values.length; i++) {
+        final x = values.length == 1
+            ? chart.center.dx
+            : chart.left + chart.width * i / (values.length - 1);
+        final y = chart.bottom - chart.height * values[i] / maximum;
+        if (i == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
+        canvas.drawCircle(Offset(x, y), 3.5, Paint()..color = colors[s]);
+      }
+      canvas.drawPath(
+          path,
+          Paint()
+            ..color = colors[s]
+            ..strokeWidth = 2
+            ..style = PaintingStyle.stroke);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _NpkTrendPainter oldDelegate) =>
+      !identical(oldDelegate.tests, tests);
 }
 
 class SoilResultDetailsScreen extends StatelessWidget {
@@ -2090,6 +2430,21 @@ class SoilResultDetailsScreen extends StatelessWidget {
           _resultValue(context, 'Potassium (K)', test['k'], test['unit']),
         ])),
         const SizedBox(height: 8),
+        ListTile(
+          leading: const Icon(Icons.cloud_upload_outlined),
+          title: const AppText('Backend sync'),
+          subtitle: AppText(
+              (test['sync_status'] as String? ?? 'local') == 'synced'
+                  ? 'Sent to the backend'
+                  : 'Saved locally; not yet sent to the backend'),
+        ),
+        ListTile(
+          leading: const Icon(Icons.sensors_outlined),
+          title: const AppText('Reading source'),
+          subtitle: AppText(test['source'] == 'simulated'
+              ? 'Simulated demo reading, not a device measurement'
+              : (test['source'] as String? ?? 'manual')),
+        ),
         ListTile(
           leading: Icon((test['favorite'] as int) == 1
               ? Icons.star

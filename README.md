@@ -1,49 +1,60 @@
-# NPK Analyzer farmer app and backend
+# Portable NPK soil analyzer
 
-This repository contains the Flutter farmer application and an optional FastAPI service. The app can keep farm, field, photo and soil-test history on-device. Backend calls provide schema-validated reading intake, a numerical tolerance check, conservative fertilizer-advice responses, and an Ollama-backed retrieval assistant.
+This repository contains a Flutter farmer application and a local FastAPI backend foundation. The backend accepts reported NPK readings, compares them against reference tolerances, provides a guarded fertilizer-advice contract, and offers an Ollama-backed assistant grounded in a small cited knowledge index.
 
-## Requirements
+## Backend setup (Python 3.10+)
 
-- Flutter 3.24+ / Dart 3.3+
-- Python 3.10+ and pip for the API
-- Ollama is optional; the AI endpoint requires it to be running
-- Android or iOS device for native BLE, GPS, speech and local database features
-
-## Run the backend
+From PowerShell:
 
 ```powershell
 cd backend
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+python -m pytest
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Open `http://127.0.0.1:8000/docs` for the interactive API. On an Android emulator, use `http://10.0.2.2:8000`; on a physical device, use the computer's LAN address. Production deployments must use HTTPS. Set `OLLAMA_URL` and `OLLAMA_MODEL` when Ollama is not at its default local address/model. Pull the model separately with `ollama pull llama3.2:1b`.
+Open `http://127.0.0.1:8000/docs`. An Android emulator can reach the host at `http://10.0.2.2:8000`; a physical device needs the computer's LAN address and firewall access. For real deployments use HTTPS, authentication, persistent storage, and restricted CORS settings. The current CORS default accepts local browser development origins only.
 
-## Run the Flutter app
+Optional assistant setup:
+
+```powershell
+ollama pull llama3.2:1b
+$env:OLLAMA_URL = 'http://127.0.0.1:11434'
+$env:OLLAMA_MODEL = 'llama3.2:1b'
+```
+
+`backend/.env.example` lists placeholder configuration values. The app reads environment variables directly and does not load `.env` files on its own. A development container can be built from `backend/` with `docker build -t npk-analyzer-api .`; mount `/data` persistently to retain SQLite readings. The API has no authentication, so do not expose it publicly without an authenticated HTTPS service and user-scoped storage.
+
+`OLLAMA_URL`, `OLLAMA_MODEL`, `CORS_ORIGIN_REGEX`, and `LOG_LEVEL` are read from the environment. The assistant returns HTTP 503 when retrieval finds material but the configured Ollama service cannot answer. Model speed and answer quality have not been benchmarked.
+
+## Flutter app
+
+The Flutter app is local-first: farms, fields, crop selections, photos and soil-test history use SQLite on the device. It starts in clearly labelled simulator mode for development. The simulator values are synthetic and do not represent analyzer measurements. Disable it with `--dart-define=NPK_SIMULATOR=false` when a real, vendor-documented BLE adapter is supplied.
+
+The API client is wired into soil reading submission, fertilizer advice and the agricultural assistant. Configure the API base address with `--dart-define=NPK_API_URL=...`; the default `http://10.0.2.2:8000` is for an Android emulator. A physical phone must use the computer's reachable LAN address during local development. The debug Android manifest permits cleartext traffic for that local setup only; release builds should use HTTPS.
+
+Run the mobile app from the repository root:
 
 ```powershell
 flutter pub get
-flutter run --dart-define=NPK_API_URL=http://10.0.2.2:8000 --dart-define=NPK_SIMULATOR=true
-```
-
-The simulator emits a demonstration reading (N 42, P 18, K 95 mg/kg) and must not be treated as a field measurement. Omit `NPK_SIMULATOR=true` to disable fake sensor data. A production BLE adapter cannot be configured until the analyzer vendor supplies its service/characteristic UUIDs, command format, packet layout, units and measurement calibration. Backend calls can be disabled from the integration by omitting the backend service wiring in `lib/main.dart`.
-
-## Test and analyze
-
-```powershell
 flutter analyze
 flutter test
-cd backend
-python -m pip install -r requirements.txt
-python -m pytest
+flutter run --dart-define=NPK_API_URL=http://10.0.2.2:8000
 ```
 
-In this workspace, the Flutter adapter tests passed (3 tests) and Dart analysis reported no issues. Backend pytest tests were added but not run because the available Windows `python` and `py` launchers could not execute. Do not treat the backend as runtime-verified until `python -m pytest` and API startup have been run in a Python 3.10+ environment.
+## Limits and data handling
 
-## Data and limitations
+- Supported unit is `mg/kg`; no raw electrical sensor conversion is implemented.
+- Backend readings persist in a bounded local SQLite database at `backend/data/readings.sqlite3` by default. Set `NPK_DATABASE_PATH` to choose another file. The store has no account or user isolation and is not suitable for a multi-user public deployment.
+- Flutter readings remain available offline. Failed backend submissions stay in the local history marked unsynced, with a manual retry action.
+- The calibrated recommendation registry is empty. Recommendations remain unavailable until region, crop, soil-test method and measurement calibration are validated.
+- Supabase is a schema draft only. There is no cloud sync, authentication or active RLS configuration.
+- No image classifier or expert messaging provider is configured. Flutter photo storage does not determine NPK.
 
-Farm data and history currently remain in local SQLite. No authentication, cloud sync, account management, expert inbox, push reminders, or remote image analysis is implemented. Supabase is optional; see `supabase/schema.sql` for a starting schema, not a deployed integration. Photos are stored locally and are not NPK measurements. Fertilizer quantities remain empty until soil-test methods and crop/region calibration data are added and reviewed. Readings submitted to the API are echoed with a timestamp; the backend does not derive NPK from raw sensor electrical values because the hardware calibration is not specified.
+## Tests
 
-See [API.md](API.md), [BLE.md](BLE.md) and [INTEGRATION.md](INTEGRATION.md) for contracts and component boundaries.
+Backend tests are in `backend/tests`; run `python -m pip install -r requirements.txt` and then `python -m pytest -v` from `backend/`. Flutter tests and static analysis run from the repository root with `flutter test` and `flutter analyze`.
+
+See [API.md](API.md) for endpoint contracts and [INTEGRATION.md](INTEGRATION.md) for component status and integration assumptions.

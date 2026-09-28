@@ -4,6 +4,7 @@ import '../models/domain.dart';
 /// Person 2 supplies a BLE implementation and documented protocol adapter.
 /// The farmer module intentionally does not make assumptions about packets.
 abstract interface class NpkDeviceService {
+  bool get isSimulator => false;
   Stream<List<DeviceInfo>> get discoveries;
   Stream<DeviceConnection> get connectionEvents;
   Stream<DeviceTestEvent> get testEvents;
@@ -62,6 +63,32 @@ abstract interface class CropRecommendationService {
   Future<List<CropEstimate>> recommend(String language, NpkResult? soil);
 }
 
+/// Fertilizer advice is separate from crop-profit estimates. A safe response
+/// may provide no application quantities when local calibration is missing.
+abstract interface class FertilizerAdviceService {
+  Future<FertilizerAdvice> recommend(NpkResult soil, {String? crop});
+}
+
+abstract interface class ReadingSubmissionService {
+  Future<String> submitReading(NpkResult reading, {DateTime? measuredAt});
+}
+
+class FertilizerAdvice {
+  final String? crop;
+  final String status;
+  final Map<String, double> nutrients;
+  final List<String> additionalInformation, advice, sources;
+
+  const FertilizerAdvice({
+    required this.crop,
+    required this.status,
+    required this.nutrients,
+    required this.additionalInformation,
+    required this.advice,
+    required this.sources,
+  });
+}
+
 class CropEstimate {
   final String crop, currency, yieldUnit, priceUnit;
   final double? cost, yieldAmount, marketPrice, potentialProfit;
@@ -83,7 +110,14 @@ abstract interface class AiAssistantService {
 class AssistantReply {
   final String text;
   final List<String> sources;
-  const AssistantReply(this.text, [this.sources = const []]);
+  final String answerType;
+  final String providerStatus;
+  final bool insufficientInformation;
+  const AssistantReply(this.text,
+      [this.sources = const [],
+      this.answerType = 'general_information',
+      this.providerStatus = 'unknown',
+      this.insufficientInformation = false]);
 }
 
 abstract interface class FarmingCalendarService {
@@ -97,6 +131,8 @@ abstract interface class FarmingReminderService {
 /// Optional implementations are injected at app startup by the integration module.
 class FarmerServices {
   final NpkDeviceService? npkDevice;
+  final FertilizerAdviceService? fertilizerAdvice;
+  final ReadingSubmissionService? readingSubmission;
   final WeatherService? weather;
   final CropRecommendationService? cropRecommendations;
   final AiAssistantService? assistant;
@@ -105,6 +141,8 @@ class FarmerServices {
   final WidgetBuilder? expertDashboardBuilder;
   const FarmerServices(
       {this.npkDevice,
+      this.fertilizerAdvice,
+      this.readingSubmission,
       this.weather,
       this.cropRecommendations,
       this.assistant,

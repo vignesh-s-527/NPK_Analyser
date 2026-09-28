@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
@@ -9,7 +11,7 @@ class LocalStore {
   Future<void> initialize() async {
     final root = await getDatabasesPath();
     db = await openDatabase(p.join(root, 'npk_farmer.db'),
-        version: 1,
+        version: 4,
         onCreate: (d, _) async {
           await d.execute(
               'CREATE TABLE profile(id INTEGER PRIMARY KEY CHECK(id=1), name TEXT, language TEXT NOT NULL DEFAULT \'en\', tutorial_done INTEGER NOT NULL DEFAULT 0)');
@@ -24,9 +26,33 @@ class LocalStore {
           await d.execute(
               'CREATE TABLE devices(id TEXT PRIMARY KEY, name TEXT NOT NULL)');
           await d.execute(
-              'CREATE TABLE tests(id INTEGER PRIMARY KEY AUTOINCREMENT, field_id INTEGER NOT NULL REFERENCES fields(id) ON DELETE CASCADE, tested_at TEXT NOT NULL, n REAL NOT NULL, p REAL NOT NULL, k REAL NOT NULL, unit TEXT NOT NULL, note TEXT NOT NULL DEFAULT \'\', favorite INTEGER NOT NULL DEFAULT 0)');
+              'CREATE TABLE tests(id INTEGER PRIMARY KEY AUTOINCREMENT, field_id INTEGER NOT NULL REFERENCES fields(id) ON DELETE CASCADE, tested_at TEXT NOT NULL, n REAL NOT NULL, p REAL NOT NULL, k REAL NOT NULL, unit TEXT NOT NULL, note TEXT NOT NULL DEFAULT \'\', favorite INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT \'manual\', backend_reading_id TEXT, sync_status TEXT NOT NULL DEFAULT \'local\')');
           await d.execute(
               'CREATE TABLE crops(id INTEGER PRIMARY KEY AUTOINCREMENT, farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE, crop TEXT NOT NULL, UNIQUE(farm_id,crop))');
+          await d.execute(
+              'CREATE TABLE chat_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL CHECK(role IN (\'farmer\', \'assistant\')), content TEXT NOT NULL, sources TEXT NOT NULL DEFAULT \'[]\', created_at TEXT NOT NULL, answer_type TEXT, provider_status TEXT, insufficient_information INTEGER NOT NULL DEFAULT 0)');
+        },
+        onUpgrade: (d, oldVersion, newVersion) async {
+          if (oldVersion < 2) {
+            await d.execute(
+                "ALTER TABLE tests ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'");
+            await d.execute(
+                'ALTER TABLE tests ADD COLUMN backend_reading_id TEXT');
+            await d.execute(
+                "ALTER TABLE tests ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'local'");
+          }
+          if (oldVersion < 3) {
+            await d.execute(
+                'CREATE TABLE chat_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL CHECK(role IN (\'farmer\', \'assistant\')), content TEXT NOT NULL, sources TEXT NOT NULL DEFAULT \'[]\', created_at TEXT NOT NULL)');
+          }
+          if (oldVersion < 4) {
+            await d.execute(
+                'ALTER TABLE chat_messages ADD COLUMN answer_type TEXT');
+            await d.execute(
+                'ALTER TABLE chat_messages ADD COLUMN provider_status TEXT');
+            await d.execute(
+                'ALTER TABLE chat_messages ADD COLUMN insufficient_information INTEGER NOT NULL DEFAULT 0');
+          }
         },
         onConfigure: (d) async => d.execute('PRAGMA foreign_keys=ON'));
   }
@@ -116,7 +142,27 @@ class LocalStore {
         await txn.delete('farms');
         await txn.delete('devices');
         await txn.delete('photos');
+        await txn.delete('chat_messages');
       });
+  Future<int> addChatMessage(
+          {required String role,
+          required String content,
+          List<String> sources = const [],
+          String? answerType,
+          String? providerStatus,
+          bool insufficientInformation = false}) =>
+      db.insert('chat_messages', {
+        'role': role,
+        'content': content,
+        'sources': jsonEncode(sources),
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+        'answer_type': answerType,
+        'provider_status': providerStatus,
+        'insufficient_information': insufficientInformation ? 1 : 0,
+      });
+  Future<List<Map<String, Object?>>> chatMessages({int limit = 100}) => db
+      .query('chat_messages', orderBy: 'id DESC', limit: limit)
+      .then((rows) => rows.reversed.toList());
   Future<List<Map<String, Object?>>> testHistory(int fieldId) =>
       db.query('tests',
           where: 'field_id=?', whereArgs: [fieldId], orderBy: 'tested_at ASC');
@@ -131,18 +177,26 @@ class LocalStore {
           required double p,
           required double k,
           required String unit,
+          DateTime? testedAt,
+          String source = 'manual',
           String note = '',
           bool favorite = false}) =>
       db.insert('tests', {
         'field_id': fieldId,
-        'tested_at': DateTime.now().toIso8601String(),
+        'tested_at': (testedAt ?? DateTime.now()).toUtc().toIso8601String(),
         'n': n,
         'p': p,
         'k': k,
         'unit': unit,
+        'source': source,
+        'sync_status': 'local',
         'note': note,
         'favorite': favorite ? 1 : 0
       });
+  Future<void> markTestSynced(int id, String backendReadingId) async =>
+      db.update('tests',
+          {'backend_reading_id': backendReadingId, 'sync_status': 'synced'},
+          where: 'id=?', whereArgs: [id]);
   Future<void> updateTest(int id,
           {required String note, required bool favorite}) async =>
       db.update('tests', {'note': note, 'favorite': favorite ? 1 : 0},

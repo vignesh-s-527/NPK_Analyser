@@ -17,18 +17,25 @@ class _FarmerShellState extends State<FarmerShell> {
         weatherService: widget.services.weather,
         calendarService: widget.services.calendar,
         recommendationService: widget.services.cropRecommendations,
-        reminderService: widget.services.reminders),
-    SoilScreen(service: widget.services.npkDevice),
+        reminderService: widget.services.reminders,
+        npkDevice: widget.services.npkDevice,
+        readingSubmission: widget.services.readingSubmission),
+    SoilScreen(
+        service: widget.services.npkDevice,
+        readingSubmission: widget.services.readingSubmission),
     CropsScreen(
         recommendationService: widget.services.cropRecommendations,
+        fertilizerAdviceService: widget.services.fertilizerAdvice,
         calendarService: widget.services.calendar,
-        reminderService: widget.services.reminders),
+        reminderService: widget.services.reminders,
+        readingSubmission: widget.services.readingSubmission),
     AssistantScreen(service: widget.services.assistant),
     ProfileScreen(
         calendarConnected: widget.services.calendar != null,
         remindersConnected: widget.services.reminders != null,
         calendarService: widget.services.calendar,
-        reminderService: widget.services.reminders)
+        reminderService: widget.services.reminders,
+        readingSubmission: widget.services.readingSubmission)
   ];
 
   @override

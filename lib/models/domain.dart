@@ -20,8 +20,18 @@ class Field {
 class NpkResult {
   final double nitrogen, phosphorus, potassium;
   final String unit;
+  final String source;
   const NpkResult(this.nitrogen, this.phosphorus, this.potassium,
-      {this.unit = 'mg/kg'});
+      {this.unit = 'mg/kg', this.source = 'device'});
+
+  bool get isValid =>
+      unit == 'mg/kg' &&
+      nitrogen.isFinite &&
+      nitrogen >= 0 &&
+      phosphorus.isFinite &&
+      phosphorus >= 0 &&
+      potassium.isFinite &&
+      potassium >= 0;
 }
 
 class SoilTest {

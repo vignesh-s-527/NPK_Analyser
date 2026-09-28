@@ -1,29 +1,66 @@
-# Farmer module integration
+# Flutter and backend integration
 
-This repository contains the Flutter source and dependency manifest. Flutter/Dart must be installed. Generate the standard mobile platform folders once, then fetch packages and run on a connected device:
+## Current application behavior
 
-```sh
-flutter create --platforms=android,ios .
-flutter pub get
-flutter run
+The Flutter app starts with these components connected through `FarmerServices`:
+
+- A clearly labelled simulated analyzer for development. Set `NPK_SIMULATOR=false` to turn it off. No physical BLE protocol is implemented.
+- A FastAPI client for posting readings, requesting fertilizer advice and asking the agricultural assistant.
+- Local SQLite storage for farms, fields, crops and soil-test history. A reading is saved locally before its backend request. If the request fails, it remains marked as unsynced in history and can be retried there.
+- An English/Tamil application language selector and localized application copy.
+
+The simulator emits synthetic values only, tagged `simulated` in local storage and in the API request. They are not device readings and are not calibrated soil results.
+
+## Run the backend
+
+From PowerShell:
+
+```powershell
+cd backend
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pytest -v
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Configure Android and iOS BLE, location, photo library, microphone, and speech recognition permissions in the generated platform manifests (`AndroidManifest.xml` and `ios/Runner/Info.plist`). Flutter and Dart were unavailable in the implementation environment, so the app could not be analyzed or run there.
+The backend uses SQLite at `backend/data/readings.sqlite3` by default. Set `NPK_DATABASE_PATH` before starting it to use a different file. It stores the latest 1,000 readings. This is single-user local storage; it does not provide accounts, authorization or cloud sync.
 
-## Person 2 service seams
+For a container image, build from `backend/` with `docker build -t npk-analyzer-api .`, then run it with a persistent volume such as `docker run --rm -p 8000:8000 -v npk-data:/data npk-analyzer-api`. `backend/.env.example` lists placeholder environment settings; the app reads environment variables and does not automatically load a `.env` file. The container has no authentication, so keep it behind an authenticated HTTPS service before any public deployment.
 
-- Implement services from `lib/services/contracts.dart` and inject them through `NpkApp(services: FarmerServices(...))`. The bundle accepts NPK device, weather, crop recommendation, AI assistant, calendar, reminders, and expert dashboard implementations.
-- Emit only final test events to the farmer UI. Do not expose live readings or encode a device protocol here; connect the implementation to the device protocol specification.
-- Calendar events are passed to the optional reminder service for scheduling. Crop recommendations receive the selected language and latest saved NPK result when available. AI responses can include source references; the UI does not fabricate answers.
-- Persist farms, fields, devices, crop selections, and successful tests using `LocalStore`. Failed test events must not be inserted. Ask before saving each successful test. Keep history scoped to fields and cascade field/farm removal into their tests.
-- Add localized strings for Tamil and English and persist selected language in `profile.language`. Complete the first-launch tutorial and field/farm CRUD flows as features are wired.
+## Run the Flutter app
 
-## Packages
+From the repository root:
 
-`sqflite` and `path` (local SQLite and paths), `flutter_blue_plus` (BLE adapter implementation), `image_picker` and `path_provider` (compressed photo selection and app-private storage), `geolocator` (GPS), `speech_to_text` and `flutter_tts` (assistant voice), and `flutter_local_notifications` (calendar reminder implementation).
+```powershell
+flutter pub get
+flutter analyze
+flutter test
+flutter run --dart-define=NPK_API_URL=http://10.0.2.2:8000
+```
 
-The database schema is versioned in `lib/data/local_store.dart`; add a version bump and `onUpgrade` migration whenever the schema changes. Farm and field deletion removes associated photos and test history. No accounts, cloud storage, or sync are included.
+`NPK_API_URL` is compiled into the app:
 
-## Integration status
+- **Android emulator:** `http://10.0.2.2:8000`
+- **Physical Android device on the same network:** `http://<computer-LAN-IP>:8000`
+- **Deployed backend:** use its HTTPS URL.
 
-Farm and field details, optional farmer name, crop selections, successful test history, notes and favorites use local SQLite. Photos are compressed on import, stored in app-private storage, and removed with their farm or field. Farm locations can be entered manually or captured with GPS. Saved device names can be added on discovery and removed in Profile; each connection remains manual. The app wiring accepts backend service implementations and expert dashboard routing through `FarmerServices`. Navigation and main page headings switch between English and Tamil; secondary dialogs and detailed screen copy still need complete translation. Voice input and spoken responses are wired to platform speech plugins and the selected language. Person 2 still needs to supply BLE, weather, recommendation, AI, calendar and reminder implementations plus platform permissions and validated agronomic classifications.
+The debug Android manifest allows cleartext traffic for local development. Release builds should use HTTPS. The API client has request timeouts and returns readable connection and validation errors. Soil readings remain in local history when the backend cannot be reached; use **Retry backend sync** in a reading's history menu after the connection is restored.
+
+## Backend services
+
+- **Readings:** `POST /v1/readings`, `GET /v1/readings`, and `GET /v1/readings/{reading_id}`. The API's SQLite store persists them locally.
+- **Fertilizer advice:** `POST /v1/recommendations`. The adapter displays the backend status, missing information, general safety advice and sources. No calibrated fertilizer rate is configured, so it must not show product quantities or diagnose deficiency from these readings.
+- **Agricultural assistant:** `POST /v1/assistant`. The app sends the question, selected language and latest local reading when available. The UI identifies model-generated answers and the insufficient-information fallback. A matching knowledge passage requires the configured Ollama service; without it the backend returns HTTP 503.
+
+Set `OLLAMA_URL`, `OLLAMA_MODEL`, `CORS_ORIGIN_REGEX`, `LOG_LEVEL`, and `NPK_DATABASE_PATH` in the backend environment as needed. Never put provider credentials in Flutter or commit them to the repository.
+
+## Device and other providers still needed
+
+The `NpkDeviceService` interface and simulator establish the Flutter connection seam. Replacing the simulator with a real adapter requires the analyzer vendor's BLE service and characteristic UUIDs, commands, packet format, unit definition, error behavior and validated calibration procedures. N, P and K have separate measurement paths; nitrogen uses a gas sensor. No UUID, packet structure or calibration conversion is invented here.
+
+The weather, crop-profit estimates, farming calendar, reminders, expert messaging, authentication and remote image analysis do not have active provider implementations. Farm photos are stored locally; they do not determine nutrient values. The Supabase SQL file is a draft and is not connected; enable row-level security and add owner-scoped policies before using it.
+
+## Validation and deployment limits
+
+Run backend tests from `backend/` and Flutter analysis/tests from the repository root. Physical BLE behavior, production authentication, deployment, and agronomic calibration still require external device specifications and validation. Do not expose the local API publicly without HTTPS, authentication, user-scoped storage and a security review.
