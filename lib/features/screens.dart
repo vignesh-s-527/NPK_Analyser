@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../app/app_language.dart';
+import '../app/ferta_theme.dart';
 import '../data/local_store.dart';
 import '../models/domain.dart';
 import '../services/contracts.dart';
@@ -18,6 +19,9 @@ class HomeScreen extends StatefulWidget {
   final FarmingReminderService? reminderService;
   final NpkDeviceService? npkDevice;
   final ReadingSubmissionService? readingSubmission;
+  final FertilizerAdviceService? fertilizerAdviceService;
+  final AiAssistantService? assistantService;
+  final ValueChanged<int>? onNavigate;
   const HomeScreen(
       {super.key,
       this.weatherService,
@@ -25,36 +29,55 @@ class HomeScreen extends StatefulWidget {
       this.recommendationService,
       this.reminderService,
       this.npkDevice,
-      this.readingSubmission});
+      this.readingSubmission,
+      this.fertilizerAdviceService,
+      this.assistantService,
+      this.onNavigate});
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
   List<Map<String, Object?>> farms = [], tests = [];
+  Map<int, int> farmFieldCounts = {};
+  int? selectedFarmId;
   int fieldCount = 0;
   WeatherSummary? weather;
   List<CalendarEvent> events = [];
   List<CropEstimate> recommendations = [];
+  String? farmerName;
+  DeviceConnection? connection;
+  StreamSubscription<DeviceConnection>? connectionSub;
   bool weatherError = false, calendarError = false, recommendationError = false;
   @override
   void initState() {
     super.initState();
+    connectionSub = widget.npkDevice?.connectionEvents.listen((value) {
+      if (mounted) setState(() => connection = value);
+    });
     _load();
   }
 
   Future<void> _load() async {
     final store = LocalStore.instance;
     final f = await store.farms();
-    var count = 0;
+    final profile = await store.profile();
+    final counts = <int, int>{};
     for (final farm in f) {
-      count += (await store.fields(farm['id'] as int)).length;
+      counts[farm['id'] as int] =
+          (await store.fields(farm['id'] as int)).length;
     }
+    final activeFarmId = f.any((farm) => farm['id'] == selectedFarmId)
+        ? selectedFarmId
+        : (f.isEmpty ? null : f.first['id'] as int);
     final t = await store.latestTests();
     if (mounted)
       setState(() {
         farms = f;
-        fieldCount = count;
+        selectedFarmId = activeFarmId;
+        farmFieldCounts = counts;
+        farmerName = (profile?['name'] as String?)?.trim();
+        fieldCount = counts.values.fold(0, (sum, count) => sum + count);
         tests = t;
       });
     if (widget.weatherService != null) {
@@ -93,7 +116,6 @@ class _HomeScreenState extends State<HomeScreen> {
               unit: row['unit'] as String,
               source: row['source'] as String? ?? 'manual');
         }
-        final profile = await store.profile();
         recommendations = await widget.recommendationService!
             .recommend((profile?['language'] as String?) ?? 'en', latest);
       } catch (_) {
@@ -109,131 +131,414 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) _load();
   }
 
+  Future<void> _openCrops() async => _open(CropsScreen(
+        recommendationService: widget.recommendationService,
+        fertilizerAdviceService: widget.fertilizerAdviceService,
+        calendarService: widget.calendarService,
+        reminderService: widget.reminderService,
+        readingSubmission: widget.readingSubmission,
+      ));
+
+  Future<void> _selectFarm(int id) async {
+    setState(() => selectedFarmId = id);
+    final farm = farms.firstWhere((item) => item['id'] == id);
+    if (widget.weatherService != null) {
+      try {
+        weather = await widget.weatherService!
+            .summary(farm['lat'] as double?, farm['lon'] as double?);
+        weatherError = false;
+      } catch (_) {
+        weatherError = true;
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
   @override
-  Widget build(BuildContext context) => _Page(
-          title: 'Good morning, Farmer',
-          subtitle: 'Your farm at a glance',
-          children: [
-            _Card(
-                icon: Icons.terrain,
-                title: 'Farms & fields',
-                body: farms.isEmpty
-                    ? 'No farms yet. Add a farm and field to get started.'
-                    : '${farms.length} farms | $fieldCount fields',
-                onTap: () => _open(FarmManagementScreen(
-                    readingSubmission: widget.readingSubmission))),
-            if (farms.isEmpty)
-              Wrap(spacing: 10, children: [
-                FilledButton.icon(
-                    onPressed: () => _open(FarmManagementScreen(
-                        readingSubmission: widget.readingSubmission)),
-                    icon: const Icon(Icons.add),
-                    label: const AppText('Add farm')),
-                OutlinedButton.icon(
-                    onPressed: () => _open(FarmManagementScreen(
-                        readingSubmission: widget.readingSubmission)),
-                    icon: const Icon(Icons.crop_square),
-                    label: const AppText('Add field')),
+  void dispose() {
+    connectionSub?.cancel();
+    super.dispose();
+  }
+
+  void _goTo(int destination, Widget fallback) {
+    if (widget.onNavigate != null) {
+      widget.onNavigate!(destination);
+    } else {
+      _open(fallback);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final latest = tests.isEmpty ? null : tests.first;
+    final fieldName = latest?['field_name'] as String?;
+    final firstName = farmerName?.trim().isNotEmpty == true
+        ? farmerName!.trim().split(' ').first
+        : localized(context, 'Farmer', 'விவசாயி');
+    final connected = connection?.connected ?? false;
+
+    return SafeArea(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 820),
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(22, 18, 22, 32),
+            children: [
+              Row(children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: FertaColors.forest,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: const Icon(Icons.grass_rounded,
+                      color: FertaColors.lime, size: 25),
+                ),
+                const SizedBox(width: 10),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('FERTA',
+                        style: TextStyle(
+                            color: FertaColors.forest,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.1)),
+                    Text(localized(context, 'FIELD JOURNAL', 'வயல் பதிவேடு'),
+                        style: TextStyle(
+                            color: FertaColors.muted,
+                            fontSize: 9,
+                            letterSpacing: 1.2,
+                            fontWeight: FontWeight.w600)),
+                  ],
+                ),
+                const Spacer(),
+                IconButton.filledTonal(
+                  onPressed: () => _goTo(4, const ProfileScreen()),
+                  tooltip: translateAppText(context, 'Profile'),
+                  icon: const Icon(Icons.person_outline_rounded),
+                ),
               ]),
-            if (tests.isEmpty)
-              _Card(
-                  icon: Icons.science,
-                  title: 'Latest soil results',
-                  body: 'Saved soil results will appear here.',
-                  onTap: () => _open(SoilScreen(
-                      service: widget.npkDevice,
-                      readingSubmission: widget.readingSubmission)))
-            else
-              ...tests.map((t) => _Card(
-                  icon: Icons.science,
-                  title:
-                      '${t['field_name']} | ${DateTime.parse(t['tested_at'] as String).toLocal()}',
-                  body:
-                      'N ${t['n']} | P ${t['p']} | K ${t['k']} ${t['unit']}${t['source'] == 'simulated' ? ' · SIMULATED DEMO' : ''}',
+              const SizedBox(height: 22),
+              Text(localized(context, 'Good morning', 'காலை வணக்கம்'),
+                  style: Theme.of(context).textTheme.bodyMedium),
+              Text(firstName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.headlineMedium),
+              const SizedBox(height: 18),
+              Container(
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  color: FertaColors.forest,
+                  borderRadius: BorderRadius.circular(FertaRadius.lg),
+                ),
+                child: Stack(children: [
+                  Positioned(
+                    right: -22,
+                    bottom: -44,
+                    child: Icon(Icons.eco_outlined,
+                        size: 190, color: Colors.white.withValues(alpha: .07)),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(22),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          Icon(
+                            connected
+                                ? Icons.bluetooth_connected_rounded
+                                : Icons.bluetooth_searching_rounded,
+                            color: connected
+                                ? FertaColors.lime
+                                : const Color(0xffc7d7cc),
+                            size: 18,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              widget.npkDevice == null
+                                  ? localized(
+                                      context,
+                                      'Analyzer not configured',
+                                      'கருவி அமைக்கப்படவில்லை')
+                                  : widget.npkDevice!.isSimulator
+                                      ? localized(
+                                          context,
+                                          'Demo analyzer ready',
+                                          'செய்முறை கருவி தயார்')
+                                      : connected
+                                          ? localized(
+                                              context,
+                                              'Analyzer connected',
+                                              'கருவி இணைக்கப்பட்டது')
+                                          : localized(
+                                              context,
+                                              'Analyzer disconnected',
+                                              'கருவி இணைக்கப்படவில்லை'),
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                          if (widget.npkDevice?.isSimulator ?? false)
+                            _SourceBadge(
+                              label: localized(context, 'DEMO', 'செய்முறை'),
+                              light: true,
+                            ),
+                        ]),
+                        const SizedBox(height: 22),
+                        Text(
+                          localized(context, 'Start with your soil',
+                              'உங்கள் மண்ணைச் சோதிக்கத் தொடங்குங்கள்'),
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge
+                              ?.copyWith(color: Colors.white, fontSize: 24),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          localized(
+                            context,
+                            'Choose a field, connect the analyzer and save your reading.',
+                            'வயலைத் தேர்ந்தெடுத்து கருவியை இணைத்து அளவீட்டைப் பதிவு செய்யுங்கள்.',
+                          ),
+                          style: const TextStyle(
+                              color: Color(0xffd6e2d9), height: 1.4),
+                        ),
+                        const SizedBox(height: 18),
+                        FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: FertaColors.lime,
+                            foregroundColor: FertaColors.forestDeep,
+                          ),
+                          onPressed: () => _goTo(
+                              1,
+                              SoilScreen(
+                                  service: widget.npkDevice,
+                                  readingSubmission: widget.readingSubmission)),
+                          icon: const Icon(Icons.science_outlined),
+                          label: AppText('Start soil test'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ]),
+              ),
+              const SizedBox(height: 26),
+              _DashboardSectionHeading(
+                title: localized(context, 'Your farm', 'உங்கள் பண்ணை'),
+                action: localized(context, 'Manage', 'நிர்வகி'),
+                onTap: () => _goTo(
+                    3,
+                    FarmManagementScreen(
+                        readingSubmission: widget.readingSubmission)),
+              ),
+              if (farms.isEmpty)
+                _DashboardEmptyState(
+                  icon: Icons.landscape_outlined,
+                  title: localized(context, 'Add your first farm',
+                      'உங்கள் முதல் பண்ணையைச் சேர்க்கவும்'),
+                  description: localized(
+                    context,
+                    'Farm and field records stay on this device. Add one to organize soil tests.',
+                    'பண்ணை மற்றும் வயல் பதிவுகள் இந்தச் சாதனத்தில் சேமிக்கப்படும். மண் பரிசோதனைகளை ஒழுங்குபடுத்த ஒன்றைச் சேர்க்கவும்.',
+                  ),
+                  action: localized(context, 'Add farm', 'பண்ணையைச் சேர்'),
+                  onTap: () => _goTo(
+                      3,
+                      FarmManagementScreen(
+                          readingSubmission: widget.readingSubmission)),
+                )
+              else
+                Card(
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(FertaRadius.md),
+                    onTap: () => _goTo(
+                        3,
+                        FarmManagementScreen(
+                            readingSubmission: widget.readingSubmission)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(children: [
+                        Container(
+                          width: 46,
+                          height: 46,
+                          decoration: BoxDecoration(
+                            color: FertaColors.leafLight,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Icon(Icons.agriculture_outlined,
+                              color: FertaColors.forest),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              DropdownButtonHideUnderline(
+                                child: DropdownButton<int>(
+                                  value: selectedFarmId,
+                                  isExpanded: true,
+                                  borderRadius:
+                                      BorderRadius.circular(FertaRadius.sm),
+                                  icon: const Icon(
+                                      Icons.keyboard_arrow_down_rounded),
+                                  items: farms
+                                      .map((farm) => DropdownMenuItem<int>(
+                                            value: farm['id'] as int,
+                                            child: Text(
+                                              farm['name'] as String,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .titleMedium,
+                                            ),
+                                          ))
+                                      .toList(),
+                                  onChanged: (id) {
+                                    if (id != null) _selectFarm(id);
+                                  },
+                                ),
+                              ),
+                              Text(
+                                (farmFieldCounts[selectedFarmId] ?? 0)
+                                        .toString() +
+                                    ' ' +
+                                    localized(context, 'fields', 'வயல்கள்') +
+                                    ' · ' +
+                                    farms.length.toString() +
+                                    ' ' +
+                                    localized(context, 'farms', 'பண்ணைகள்'),
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Icon(Icons.chevron_right_rounded,
+                            color: FertaColors.muted),
+                      ]),
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 12),
+              _DashboardSectionHeading(
+                title: localized(
+                    context, 'Latest soil reading', 'சமீபத்திய மண் அளவீடு'),
+                action: latest == null
+                    ? null
+                    : localized(context, 'History', 'வரலாறு'),
+                onTap: latest == null
+                    ? null
+                    : () => _open(FieldHistoryScreen(
+                          fieldId: latest['field_id'] as int,
+                          fieldName: fieldName ?? '',
+                          submissionService: widget.readingSubmission,
+                        )),
+              ),
+              if (latest == null)
+                _DashboardEmptyState(
+                  icon: Icons.science_outlined,
+                  title: localized(
+                      context, 'No readings yet', 'அளவீடுகள் இன்னும் இல்லை'),
+                  description: localized(
+                    context,
+                    'Your saved N, P and K values will appear here. Start a soil test when you are ready.',
+                    'சேமித்த N, P, K அளவுகள் இங்கே தோன்றும். தயாரானதும் மண் பரிசோதனையைத் தொடங்குங்கள்.',
+                  ),
+                  action:
+                      localized(context, 'Start a test', 'பரிசோதனை தொடங்கு'),
+                  onTap: () => _goTo(
+                      1,
+                      SoilScreen(
+                          service: widget.npkDevice,
+                          readingSubmission: widget.readingSubmission)),
+                )
+              else
+                _LatestReadingCard(
+                  reading: latest,
                   onTap: () => _open(FieldHistoryScreen(
-                      fieldId: t['field_id'] as int,
-                      fieldName: t['field_name'] as String,
-                      submissionService: widget.readingSubmission)))),
-            if (weather == null)
-              _Card(
-                  icon: Icons.cloud_outlined,
-                  title: 'Weather',
-                  body: widget.weatherService == null
-                      ? 'Weather service will be connected here.'
-                      : weatherError
-                          ? 'Weather is unavailable right now.'
-                          : 'Loading weather...',
-                  onTap: () =>
-                      _open(WeatherScreen(service: widget.weatherService)))
-            else
-              _Card(
-                  icon: Icons.cloud_outlined,
-                  title: 'Weather',
-                  body:
-                      '${weather!.description}${weather!.temperatureC == null ? '' : ' | ${weather!.temperatureC} C'}',
-                  onTap: () =>
-                      _open(WeatherScreen(service: widget.weatherService))),
-            if (widget.recommendationService == null)
-              _Card(
-                  icon: Icons.eco,
-                  title: 'Crop recommendations',
-                  body: 'Crop recommendation service will be connected here.',
-                  onTap: () => _open(CropsScreen(
-                      recommendationService: widget.recommendationService,
-                      calendarService: widget.calendarService,
-                      reminderService: widget.reminderService)))
-            else if (recommendationError)
-              _Card(
-                  icon: Icons.eco,
-                  title: 'Crop recommendations',
-                  body: 'Recommendations could not be loaded.',
-                  onTap: () => _open(CropsScreen(
-                      recommendationService: widget.recommendationService,
-                      calendarService: widget.calendarService,
-                      reminderService: widget.reminderService)))
-            else
-              ...recommendations.map((r) => _Card(
-                  icon: Icons.eco,
-                  title: 'Recommended crop: ${r.crop}',
-                  body:
-                      'Cost, yield, market price and potential profit are estimates.',
-                  onTap: () => _open(CropsScreen(
-                      recommendationService: widget.recommendationService,
-                      calendarService: widget.calendarService,
-                      reminderService: widget.reminderService)))),
-            if (widget.calendarService == null)
-              _Card(
-                  icon: Icons.event,
-                  title: 'Upcoming activities',
-                  body: 'Calendar service will be connected here.',
+                    fieldId: latest['field_id'] as int,
+                    fieldName: fieldName ?? '',
+                    submissionService: widget.readingSubmission,
+                  )),
+                ),
+              const SizedBox(height: 14),
+              _DashboardSectionHeading(
+                  title: localized(context, 'Quick access', 'விரைவான அணுகல்')),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  _QuickAction(
+                    icon: Icons.spa_outlined,
+                    label: localized(context, 'Crop planning', 'பயிர் திட்டம்'),
+                    onTap: _openCrops,
+                  ),
+                  _QuickAction(
+                    icon: Icons.forum_outlined,
+                    label: localized(context, 'Ask FERTA', 'FERTA-விடம் கேள்'),
+                    onTap: () => _goTo(
+                        2, AssistantScreen(service: widget.assistantService)),
+                  ),
+                  if (weather != null || weatherError)
+                    _QuickAction(
+                      icon: Icons.cloud_outlined,
+                      label: localized(context, 'Weather', 'வானிலை'),
+                      onTap: () =>
+                          _open(WeatherScreen(service: widget.weatherService)),
+                    ),
+                ],
+              ),
+              if (widget.recommendationService != null &&
+                  recommendations.isNotEmpty) ...[
+                const SizedBox(height: 22),
+                _DashboardSectionHeading(
+                  title: localized(context, 'Crop outlook', 'பயிர் பார்வை'),
+                  action: localized(context, 'Details', 'விவரங்கள்'),
+                  onTap: _openCrops,
+                ),
+                ...recommendations.take(2).map((item) => _Card(
+                      icon: Icons.eco_outlined,
+                      title: localized(context, 'Suggested crop',
+                              'பரிந்துரைக்கப்படும் பயிர்') +
+                          ': ' +
+                          item.crop,
+                      body: localized(
+                        context,
+                        'Planning estimate · review local conditions before deciding.',
+                        'திட்டமிடல் மதிப்பீடு · முடிவு செய்வதற்கு முன் உள்ளூர் நிலைகளைச் சரிபார்க்கவும்.',
+                      ),
+                      onTap: _openCrops,
+                    )),
+              ],
+              if (widget.calendarService != null && events.isNotEmpty) ...[
+                const SizedBox(height: 22),
+                _DashboardSectionHeading(
+                  title: localized(
+                      context, 'Upcoming activities', 'வரவிருக்கும் செயல்கள்'),
                   onTap: () => _open(CalendarScreen(
                       calendarService: widget.calendarService,
-                      reminderService: widget.reminderService)))
-            else if (calendarError)
-              _Card(
-                  icon: Icons.event,
-                  title: 'Upcoming activities',
-                  body: 'Calendar events could not be loaded.',
-                  onTap: () => _open(CalendarScreen(
-                      calendarService: widget.calendarService,
-                      reminderService: widget.reminderService)))
-            else if (events.isEmpty)
-              _Card(
-                  icon: Icons.event,
-                  title: 'Upcoming activities',
-                  body: 'No upcoming events.',
-                  onTap: () => _open(CalendarScreen(
-                      calendarService: widget.calendarService,
-                      reminderService: widget.reminderService)))
-            else
-              ...events.map((e) => _Card(
-                  icon: Icons.event,
-                  title: e.title,
-                  body: '${e.type} | ${e.date.toLocal()}',
-                  onTap: () => _open(CalendarScreen(
-                      calendarService: widget.calendarService,
-                      reminderService: widget.reminderService))))
-          ]);
+                      reminderService: widget.reminderService)),
+                ),
+                ...events.map((event) => _Card(
+                      icon: Icons.event_outlined,
+                      title: event.title,
+                      body:
+                          event.type + ' · ' + event.date.toLocal().toString(),
+                      onTap: () => _open(CalendarScreen(
+                          calendarService: widget.calendarService,
+                          reminderService: widget.reminderService)),
+                    )),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class WeatherScreen extends StatefulWidget {
@@ -605,22 +910,100 @@ class _SoilScreenState extends State<SoilScreen> {
       }
       final isSimulated = event.result.source == 'simulated';
       final measuredAt = DateTime.now().toUtc();
-      final save = await showDialog<bool>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-                  title: const AppText('Save soil test?'),
-                  content: AppText(
-                      'N ${event.result.nitrogen} · P ${event.result.phosphorus} · K ${event.result.potassium} ${event.result.unit}'
-                      '${isSimulated ? '\n\nThis is a simulated demo reading, not a measurement from a real analyzer.' : ''}'
-                      '\n\nSave this successful result to the selected field?'),
-                  actions: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(ctx, false),
-                        child: const AppText('Discard')),
-                    FilledButton(
-                        onPressed: () => Navigator.pop(ctx, true),
-                        child: const AppText('Save result'))
-                  ]));
+      final save = await showModalBottomSheet<bool>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (ctx) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 4, 22, 22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                    localized(ctx, 'Review your reading',
+                        'உங்கள் அளவீட்டைப் பாருங்கள்'),
+                    style: Theme.of(ctx).textTheme.headlineSmall),
+                const SizedBox(height: 6),
+                Row(children: [
+                  Expanded(
+                    child: Text(
+                      localized(ctx, 'Reported values · mg/kg',
+                          'பதிவான அளவுகள் · mg/kg'),
+                      style: Theme.of(ctx).textTheme.bodyMedium,
+                    ),
+                  ),
+                  if (isSimulated)
+                    _SourceBadge(label: localized(ctx, 'DEMO', 'செய்முறை')),
+                ]),
+                const SizedBox(height: 18),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(children: [
+                      _NutrientMetric(
+                          label: 'N',
+                          value: event.result.nitrogen,
+                          color: const Color(0xff39734a)),
+                      _NutrientMetric(
+                          label: 'P',
+                          value: event.result.phosphorus,
+                          color: const Color(0xff376a9f)),
+                      _NutrientMetric(
+                          label: 'K',
+                          value: event.result.potassium,
+                          color: const Color(0xffa96b25)),
+                    ]),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  localized(
+                    ctx,
+                    'Measured at ${measuredAt.toLocal().toString().substring(0, 16)}',
+                    'அளவீட்டு நேரம் ${measuredAt.toLocal().toString().substring(0, 16)}',
+                  ),
+                  style: Theme.of(ctx).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  isSimulated
+                      ? localized(
+                          ctx,
+                          'Demo values are simulated and are not measurements from a real analyzer.',
+                          'செய்முறை மதிப்புகள் உருவகப்படுத்தப்பட்டவை; உண்மையான கருவி அளவீடுகள் அல்ல.',
+                        )
+                      : localized(
+                          ctx,
+                          'These are reported values. Calibration and deficiency status have not been verified.',
+                          'இவை பதிவான அளவுகள். அளவுத்திருத்தமும் குறைபாட்டு நிலையும் சரிபார்க்கப்படவில்லை.',
+                        ),
+                  style: Theme.of(ctx).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 18),
+                Row(children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: Text(localized(ctx, 'Discard', 'நீக்கு')),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      icon: const Icon(Icons.bookmark_add_outlined),
+                      label: Text(
+                          localized(ctx, 'Save reading', 'அளவீட்டைச் சேமி')),
+                    ),
+                  ),
+                ]),
+              ],
+            ),
+          ),
+        ),
+      );
       if (save == true) {
         final testId = await LocalStore.instance.saveTest(
             fieldId: target,
@@ -656,6 +1039,14 @@ class _SoilScreenState extends State<SoilScreen> {
         title: 'Soil testing',
         subtitle: 'Connect your analyzer and test a field',
         children: [
+          _SoilWorkflowCard(
+            simulator: widget.service?.isSimulator ?? false,
+            scanning: scanning,
+            connected: connection?.connected ?? false,
+            testing: testing,
+            hasField: fieldId != null,
+            hasError: statusError != null,
+          ),
           if (widget.service?.isSimulator ?? false)
             Card(
                 color: Theme.of(context).colorScheme.secondaryContainer,
@@ -676,7 +1067,7 @@ class _SoilScreenState extends State<SoilScreen> {
                       child: AppText(f['name'] as String, translate: false),
                     ))
                 .toList(),
-            onChanged: (id) => setState(() => fieldId = id),
+            onChanged: testing ? null : (id) => setState(() => fieldId = id),
           ),
           const SizedBox(height: 12),
           FilledButton.icon(
@@ -857,6 +1248,7 @@ class _CropsScreenState extends State<CropsScreen> {
   List<CropEstimate> estimates = [];
   FertilizerAdvice? fertilizerAdvice;
   List<CalendarEvent> events = [];
+  Map<String, Object?>? latestReading;
   int? farmId;
   bool recommendationError = false, calendarError = false;
 
@@ -869,28 +1261,40 @@ class _CropsScreenState extends State<CropsScreen> {
   Future<void> _load() async {
     final store = LocalStore.instance;
     final farmRows = await store.farms();
-    final selectedId =
-        farmId ?? (farmRows.isEmpty ? null : farmRows.first['id'] as int);
+    final selectedId = farmRows.any((farm) => farm['id'] == farmId)
+        ? farmId
+        : (farmRows.isEmpty ? null : farmRows.first['id'] as int);
     final cropRows = selectedId == null
         ? <Map<String, Object?>>[]
         : await store.crops(selectedId);
+    Map<String, Object?>? newestReading;
+    if (selectedId != null) {
+      for (final field in await store.fields(selectedId)) {
+        final history = await store.testHistory(field['id'] as int);
+        if (history.isEmpty) continue;
+        final row = history.last;
+        if (newestReading == null ||
+            DateTime.parse(row['tested_at'] as String).isAfter(
+                DateTime.parse(newestReading['tested_at'] as String))) {
+          newestReading = {...row, 'field_name': field['name']};
+        }
+      }
+    }
+    final soil = newestReading == null
+        ? null
+        : NpkResult(
+            (newestReading['n'] as num).toDouble(),
+            (newestReading['p'] as num).toDouble(),
+            (newestReading['k'] as num).toDouble(),
+            unit: newestReading['unit'] as String,
+            source: newestReading['source'] as String? ?? 'manual',
+          );
     List<CropEstimate> recs = [];
     FertilizerAdvice? nutrientAdvice;
     List<CalendarEvent> calendarEvents = [];
     var recFailed = false, calendarFailed = false;
     if (selectedId != null && widget.recommendationService != null) {
       try {
-        NpkResult? soil;
-        for (final field in await store.fields(selectedId)) {
-          final history = await store.testHistory(field['id'] as int);
-          if (history.isNotEmpty) {
-            final row = history.first;
-            soil = NpkResult((row['n'] as num).toDouble(),
-                (row['p'] as num).toDouble(), (row['k'] as num).toDouble(),
-                unit: row['unit'] as String);
-            break;
-          }
-        }
         final profile = await store.profile();
         recs = await widget.recommendationService!
             .recommend((profile?['language'] as String?) ?? 'en', soil);
@@ -900,22 +1304,11 @@ class _CropsScreenState extends State<CropsScreen> {
     }
     if (selectedId != null && widget.fertilizerAdviceService != null) {
       try {
-        for (final field in await store.fields(selectedId)) {
-          final history = await store.testHistory(field['id'] as int);
-          if (history.isNotEmpty) {
-            final row = history.last;
-            nutrientAdvice = await widget.fertilizerAdviceService!.recommend(
-              NpkResult(
-                (row['n'] as num).toDouble(),
-                (row['p'] as num).toDouble(),
-                (row['k'] as num).toDouble(),
-                unit: row['unit'] as String,
-                source: row['source'] as String? ?? 'manual',
-              ),
-              crop: cropRows.isEmpty ? null : cropRows.first['crop'] as String,
-            );
-            break;
-          }
+        if (soil != null) {
+          nutrientAdvice = await widget.fertilizerAdviceService!.recommend(
+            soil,
+            crop: cropRows.isEmpty ? null : cropRows.first['crop'] as String,
+          );
         }
       } catch (_) {
         recFailed = true;
@@ -941,6 +1334,7 @@ class _CropsScreenState extends State<CropsScreen> {
         selected = cropRows;
         estimates = recs;
         fertilizerAdvice = nutrientAdvice;
+        latestReading = newestReading;
         events = calendarEvents;
         recommendationError = recFailed;
         calendarError = calendarFailed;
@@ -1000,6 +1394,45 @@ class _CropsScreenState extends State<CropsScreen> {
                     farmId = id;
                     await _load();
                   }),
+            if (farmId != null) ...[
+              const SizedBox(height: 18),
+              _DashboardSectionHeading(
+                title: localized(
+                    context, 'Latest soil reading', 'சமீபத்திய மண் அளவீடு'),
+              ),
+              if (latestReading == null)
+                _DashboardEmptyState(
+                  icon: Icons.science_outlined,
+                  title: localized(context, 'No reading for this farm yet',
+                      'இந்தப் பண்ணைக்கு இன்னும் அளவீடு இல்லை'),
+                  description: localized(
+                      context,
+                      'Save a field reading to ground crop and fertilizer guidance in your soil data.',
+                      'பயிர் மற்றும் உர வழிகாட்டுதலை உங்கள் மண் தரவில் அமைக்க வயல் அளவீட்டைச் சேமிக்கவும்.'),
+                  action:
+                      localized(context, 'Manage fields', 'வயல்களை நிர்வகி'),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => FarmManagementScreen(
+                          readingSubmission: widget.readingSubmission),
+                    ),
+                  ),
+                )
+              else
+                _LatestReadingCard(
+                  reading: latestReading!,
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => FieldHistoryScreen(
+                        fieldId: latestReading!['field_id'] as int,
+                        fieldName:
+                            latestReading!['field_name'] as String? ?? '',
+                        submissionService: widget.readingSubmission,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
             if (farmId != null)
               Card(
                   child: Column(children: [
@@ -1141,6 +1574,7 @@ class AssistantScreen extends StatefulWidget {
 
 class _AssistantScreenState extends State<AssistantScreen> {
   final controller = TextEditingController();
+  final composerFocus = FocusNode();
   final speech = stt.SpeechToText();
   final tts = FlutterTts();
   final messages = <_ChatItem>[];
@@ -1271,122 +1705,367 @@ class _AssistantScreenState extends State<AssistantScreen> {
   }
 
   Widget _message(_ChatItem item) {
-    if (item.farmer) {
-      return Align(
-          alignment: Alignment.centerRight,
-          child: Card(
-            color: Theme.of(context).colorScheme.primaryContainer,
-            child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: AppText(item.question, translate: false)),
-          ));
-    }
-    final reply = item.reply!;
-    return Align(
-        alignment: Alignment.centerLeft,
-        child: Card(
-          child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  AppText(
-                      reply.providerStatus == 'knowledge_fallback'
-                          ? 'Insufficient information · safe fallback'
-                          : reply.providerStatus == 'ollama_generated'
-                              ? 'AI-generated answer · check the listed sources'
-                              : 'Answer status unavailable',
-                      style: Theme.of(context).textTheme.labelSmall),
-                  const SizedBox(height: 4),
-                  AppText(reply.text, translate: false),
-                  if (reply.sources.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: AppText('Sources: ${reply.sources.join(' | ')}',
-                          style: Theme.of(context).textTheme.bodySmall),
-                    ),
-                ],
-              )),
-        ));
+    final colors = Theme.of(context).colorScheme;
+    final isFarmer = item.farmer;
+    final reply = item.reply;
+    final status = reply?.providerStatus == 'knowledge_fallback'
+        ? localized(
+            context, 'Safe information fallback', 'பாதுகாப்பான தகவல் மாற்று')
+        : reply?.providerStatus == 'ollama_generated'
+            ? localized(context, 'AI-generated · review sources',
+                'AI உருவாக்கியது · ஆதாரங்களைப் பாருங்கள்')
+            : localized(context, 'Answer status unavailable',
+                'பதில் நிலை கிடைக்கவில்லை');
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, 8 * (1 - value)),
+          child: child,
+        ),
+      ),
+      child: Align(
+        alignment: isFarmer ? Alignment.centerRight : Alignment.centerLeft,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 620),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(15),
+            decoration: BoxDecoration(
+              color: isFarmer ? FertaColors.forest : Colors.white,
+              borderRadius: BorderRadius.circular(18).copyWith(
+                bottomRight: isFarmer ? const Radius.circular(5) : null,
+                bottomLeft: isFarmer ? null : const Radius.circular(5),
+              ),
+              border: isFarmer ? null : Border.all(color: FertaColors.line),
+            ),
+            child: isFarmer
+                ? Text(item.question,
+                    style: const TextStyle(color: Colors.white, height: 1.4))
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        const Icon(Icons.eco_outlined,
+                            size: 16, color: FertaColors.leaf),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(status,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelSmall
+                                  ?.copyWith(color: FertaColors.muted)),
+                        ),
+                      ]),
+                      const SizedBox(height: 8),
+                      Text(reply?.text ?? '',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyLarge
+                              ?.copyWith(height: 1.5)),
+                      if (reply?.sources.isNotEmpty ?? false) ...[
+                        const SizedBox(height: 12),
+                        const Divider(height: 1),
+                        const SizedBox(height: 8),
+                        Text(localized(context, 'Sources', 'ஆதாரங்கள்'),
+                            style: Theme.of(context).textTheme.labelMedium),
+                        const SizedBox(height: 4),
+                        ...reply!.sources.map((source) => Padding(
+                              padding: const EdgeInsets.only(bottom: 3),
+                              child: SelectableText(
+                                source,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(color: colors.primary),
+                              ),
+                            )),
+                      ],
+                    ],
+                  ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
   void dispose() {
     controller.dispose();
+    composerFocus.dispose();
     speech.stop();
     tts.stop();
     super.dispose();
   }
 
+  void _useQuestion(String question) {
+    controller.text = question;
+    controller.selection = TextSelection.collapsed(offset: question.length);
+    composerFocus.requestFocus();
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
         body: SafeArea(
-            child: Column(children: [
-          Padding(
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
-              child: Align(
-                alignment: Alignment.centerLeft,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 820),
+              child: SizedBox.expand(
                 child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      AppText('AI Assistant',
-                          style: Theme.of(context)
-                              .textTheme
-                              .headlineSmall
-                              ?.copyWith(fontWeight: FontWeight.bold)),
-                      const AppText('Ask a question in English or Tamil'),
-                    ]),
-              )),
-          if (widget.service == null)
-            const Card(
-                margin: EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: ListTile(
-                  leading: Icon(Icons.cloud_off),
-                  title: AppText('AI service not connected'),
-                  subtitle: AppText(
-                      'Configure an AiAssistantService backend to send questions. No sample answers are generated.'),
-                )),
-          Expanded(
-              child: messages.isEmpty
-                  ? Center(
-                      child: AppText(widget.service == null
-                          ? 'Ask a farming question to get started.'
-                          : 'Ask a farming question to get started.'))
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(16),
-                      itemCount: messages.length,
-                      itemBuilder: (_, index) => _message(messages[index]))),
-          if (lastQuestion != null)
-            TextButton.icon(
-              onPressed: widget.service == null ? null : _contactExpert,
-              icon: const Icon(Icons.support_agent),
-              label: const AppText('Contact an agricultural expert'),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(22, 18, 22, 12),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 42,
+                            height: 42,
+                            decoration: BoxDecoration(
+                              color: FertaColors.leafLight,
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: const Icon(Icons.forum_outlined,
+                                color: FertaColors.forest),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  localized(context, 'Ask FERTA',
+                                      'FERTA-விடம் கேளுங்கள்'),
+                                  style: Theme.of(context).textTheme.titleLarge,
+                                ),
+                                Text(
+                                  localized(
+                                      context,
+                                      'Grounded soil and farming guidance',
+                                      'மண் மற்றும் விவசாயத்திற்கான நம்பகமான வழிகாட்டல்'),
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (sending)
+                            const SizedBox.square(
+                              dimension: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                        ],
+                      ),
+                    ),
+                    if (widget.service == null)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 18),
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(13),
+                          decoration: BoxDecoration(
+                            color: FertaColors.warningLight,
+                            borderRadius: BorderRadius.circular(FertaRadius.sm),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(Icons.cloud_off_outlined,
+                                  color: FertaColors.warning, size: 20),
+                              const SizedBox(width: 9),
+                              Expanded(
+                                child: Text(
+                                  localized(
+                                    context,
+                                    'Assistant service is not connected. Your questions stay on this device.',
+                                    'உதவியாளர் சேவை இணைக்கப்படவில்லை. உங்கள் கேள்விகள் இந்தச் சாதனத்தில் மட்டுமே இருக்கும்.',
+                                  ),
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    Expanded(
+                      child: messages.isEmpty
+                          ? Center(
+                              child: SingleChildScrollView(
+                                padding: const EdgeInsets.all(24),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      width: 66,
+                                      height: 66,
+                                      decoration: const BoxDecoration(
+                                        color: FertaColors.leafLight,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(Icons.eco_outlined,
+                                          color: FertaColors.forest, size: 32),
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      localized(context, 'How can I help?',
+                                          'நான் எப்படி உதவலாம்?'),
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleLarge,
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      localized(
+                                        context,
+                                        'Ask about soil tests, nutrients or general crop care. Advice depends on verified local information.',
+                                        'மண் பரிசோதனை, ஊட்டச்சத்து அல்லது பொதுவான பயிர் பராமரிப்பு பற்றி கேளுங்கள். ஆலோசனை சரிபார்க்கப்பட்ட உள்ளூர் தகவல்களைப் பொறுத்தது.',
+                                      ),
+                                      textAlign: TextAlign.center,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium,
+                                    ),
+                                    const SizedBox(height: 18),
+                                    Wrap(
+                                      alignment: WrapAlignment.center,
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children: [
+                                        ActionChip(
+                                          avatar: const Icon(
+                                              Icons.science_outlined,
+                                              size: 16),
+                                          label: Text(localized(
+                                              context,
+                                              'How do soil tests guide fertilizer?',
+                                              'மண் பரிசோதனை உரத் தேர்வுக்கு எப்படி உதவும்?')),
+                                          onPressed: widget.service == null
+                                              ? null
+                                              : () => _useQuestion(
+                                                  'How do soil tests guide fertilizer decisions?'),
+                                        ),
+                                        ActionChip(
+                                          avatar: const Icon(
+                                              Icons.grass_outlined,
+                                              size: 16),
+                                          label: Text(localized(
+                                              context,
+                                              'What affects nutrient availability?',
+                                              'ஊட்டச்சத்து கிடைப்பதை எது பாதிக்கிறது?')),
+                                          onPressed: widget.service == null
+                                              ? null
+                                              : () => _useQuestion(
+                                                  'What factors affect nutrient availability in soil?'),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            )
+                          : ListView.builder(
+                              padding:
+                                  const EdgeInsets.fromLTRB(18, 16, 18, 20),
+                              itemCount: messages.length,
+                              itemBuilder: (_, index) =>
+                                  _message(messages[index]),
+                            ),
+                    ),
+                    if (lastQuestion != null)
+                      TextButton.icon(
+                        onPressed:
+                            widget.service == null ? null : _contactExpert,
+                        icon: const Icon(Icons.support_agent_outlined),
+                        label: Text(localized(
+                            context,
+                            'Contact an agricultural expert',
+                            'வேளாண் நிபுணரைத் தொடர்புகொள்ளுங்கள்')),
+                      ),
+                    if (sending)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Row(
+                          children: [
+                            const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            const SizedBox(width: 9),
+                            Text(
+                              localized(context, 'Preparing a sourced answer…',
+                                  'ஆதாரமுள்ள பதிலைத் தயாரிக்கிறது…'),
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    Container(
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                        border:
+                            Border(top: BorderSide(color: FertaColors.line)),
+                      ),
+                      padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: controller,
+                              focusNode: composerFocus,
+                              minLines: 1,
+                              maxLines: 4,
+                              textInputAction: TextInputAction.send,
+                              onSubmitted: (_) => _ask(),
+                              decoration: InputDecoration(
+                                hintText: translateAppText(
+                                    context, 'Type your question'),
+                                fillColor: FertaColors.canvas,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                  borderSide: BorderSide.none,
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                  borderSide: BorderSide.none,
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                  borderSide:
+                                      const BorderSide(color: FertaColors.leaf),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          IconButton.filledTonal(
+                            onPressed: widget.service == null
+                                ? null
+                                : (listening ? _stopListening : _listen),
+                            icon: Icon(listening
+                                ? Icons.mic_rounded
+                                : Icons.mic_none_rounded),
+                            tooltip: translateAppText(
+                                context, 'Speak your question'),
+                          ),
+                          IconButton.filled(
+                            onPressed:
+                                widget.service == null || sending ? null : _ask,
+                            icon: const Icon(Icons.arrow_upward_rounded),
+                            tooltip: translateAppText(context, 'Ask'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
-          if (sending) const LinearProgressIndicator(),
-          Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-              child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                Expanded(
-                    child: TextField(
-                        controller: controller,
-                        minLines: 1,
-                        maxLines: 4,
-                        decoration: InputDecoration(
-                            border: OutlineInputBorder(),
-                            hintText: translateAppText(
-                                context, 'Type your question')))),
-                IconButton(
-                    onPressed: widget.service == null
-                        ? null
-                        : (listening ? _stopListening : _listen),
-                    icon: Icon(listening ? Icons.mic : Icons.mic_none),
-                    tooltip: translateAppText(context, 'Speak your question')),
-                IconButton.filled(
-                    onPressed: widget.service == null || sending ? null : _ask,
-                    icon: const Icon(Icons.send),
-                    tooltip: translateAppText(context, 'Ask')),
-              ])),
-        ])),
+          ),
+        ),
       );
 }
 
@@ -1478,14 +2157,57 @@ class _ProfileScreenState extends State<ProfileScreen> {
           subtitle: 'Your information stays on this device',
           children: [
             Card(
-                child: ListTile(
-                    leading:
-                        const CircleAvatar(child: Icon(Icons.person_outline)),
-                    title: AppText(farmerName ?? 'Guest farmer',
-                        translate: farmerName == null),
-                    subtitle: const AppText('Optional name'),
-                    trailing: const Icon(Icons.edit),
-                    onTap: _editName)),
+              clipBehavior: Clip.antiAlias,
+              color: FertaColors.forest,
+              child: InkWell(
+                onTap: _editName,
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 54,
+                        height: 54,
+                        decoration: BoxDecoration(
+                          color: FertaColors.lime,
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: const Icon(Icons.person_rounded,
+                            color: FertaColors.forest, size: 30),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            AppText(
+                              farmerName ?? 'Guest farmer',
+                              translate: farmerName == null,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            const AppText(
+                              'Local profile · no account required',
+                              style: TextStyle(color: Color(0xffd6e2d9)),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.edit_outlined, color: Colors.white),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            _DashboardSectionHeading(
+                title: localized(context, 'Preferences', 'விருப்பங்கள்')),
+            _DashboardSectionHeading(
+                title: localized(
+                    context, 'Farm & device data', 'பண்ணை மற்றும் கருவி தரவு')),
             Card(
                 child: ListTile(
                     leading: const CircleAvatar(child: Icon(Icons.language)),
@@ -1529,6 +2251,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         const AppText('Delete all locally stored farm data'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => _open(const LocalDataScreen()))),
+            _DashboardSectionHeading(
+                title: localized(context, 'Connections', 'இணைப்புகள்')),
             Card(
                 child: ListTile(
                     leading: const CircleAvatar(
@@ -2243,10 +2967,60 @@ class _FieldHistoryScreenState extends State<FieldHistoryScreen> {
                                         fieldName: widget.fieldName, test: t))),
                             title: AppText(
                                 '${date.toString().substring(0, 16)} · N ${t['n']}  P ${t['p']}  K ${t['k']} ${t['unit']}${t['source'] == 'simulated' ? ' · SIMULATED DEMO' : ''}'),
-                            subtitle: (t['note'] as String).isEmpty
-                                ? const AppText('No note')
-                                : AppText(t['note'] as String,
-                                    translate: false),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const SizedBox(height: 5),
+                                Text(
+                                  'N ${t['n']}  ·  P ${t['p']}  ·  K ${t['k']} ${t['unit']}',
+                                  style: Theme.of(context).textTheme.bodyMedium,
+                                ),
+                                const SizedBox(height: 5),
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 4,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  children: [
+                                    if (t['source'] == 'simulated')
+                                      _SourceBadge(
+                                          label: localized(
+                                              context, 'DEMO', 'செய்முறை')),
+                                    Icon(
+                                      (t['sync_status'] as String? ??
+                                                  'local') ==
+                                              'synced'
+                                          ? Icons.cloud_done_outlined
+                                          : Icons.cloud_off_outlined,
+                                      size: 14,
+                                      color: FertaColors.muted,
+                                    ),
+                                    Text(
+                                      (t['sync_status'] as String? ??
+                                                  'local') ==
+                                              'synced'
+                                          ? localized(context, 'Synced',
+                                              'ஒத்திசைக்கப்பட்டது')
+                                          : localized(
+                                              context,
+                                              'Saved on device · sync pending',
+                                              'சாதனத்தில் சேமிக்கப்பட்டது · ஒத்திசைவு நிலுவையில்'),
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelSmall,
+                                    ),
+                                    if ((t['note'] as String).isNotEmpty)
+                                      Text(
+                                        t['note'] as String,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall,
+                                      ),
+                                  ],
+                                ),
+                              ],
+                            ),
                             leading: Icon((t['favorite'] as int) == 1
                                 ? Icons.star
                                 : Icons.science_outlined),
@@ -2258,9 +3032,10 @@ class _FieldHistoryScreenState extends State<FieldHistoryScreen> {
                                   if (v == 'sync') _sync(t);
                                 },
                                 itemBuilder: (_) => [
-                                      if ((t['sync_status'] as String? ??
-                                              'local') !=
-                                          'synced')
+                                      if (widget.submissionService != null &&
+                                          (t['sync_status'] as String? ??
+                                                  'local') !=
+                                              'synced')
                                         const PopupMenuItem(
                                             value: 'sync',
                                             child:
@@ -2485,23 +3260,40 @@ class _Page extends StatelessWidget {
       {required this.title, required this.subtitle, required this.children});
   @override
   Widget build(BuildContext context) => SafeArea(
-          child: ListView(
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 32),
-              children: [
-            AppText(localizedPageText(context, title),
-                style: Theme.of(context)
-                    .textTheme
-                    .headlineSmall
-                    ?.copyWith(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            AppText(localizedPageText(context, subtitle),
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.black54)),
-            const SizedBox(height: 20),
-            ...children
-          ]));
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: 1),
+              duration: const Duration(milliseconds: 280),
+              curve: Curves.easeOutCubic,
+              builder: (context, value, child) => Opacity(
+                opacity: value,
+                child: Transform.translate(
+                  offset: Offset(0, 8 * (1 - value)),
+                  child: child,
+                ),
+              ),
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(22, 22, 22, 32),
+                children: [
+                  AppText(
+                    localizedPageText(context, title),
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  const SizedBox(height: 6),
+                  AppText(
+                    localizedPageText(context, subtitle),
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 22),
+                  ...children,
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
 }
 
 class _Card extends StatelessWidget {
@@ -2516,14 +3308,458 @@ class _Card extends StatelessWidget {
   });
   @override
   Widget build(BuildContext context) => Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: ListTile(
-          isThreeLine: true,
-          leading: CircleAvatar(child: Icon(icon)),
-          title: AppText(title),
-          subtitle: AppText(body),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
           onTap: onTap,
-          trailing: onTap == null ? null : const Icon(Icons.chevron_right)));
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: FertaColors.leafLight,
+                    borderRadius: BorderRadius.circular(FertaRadius.sm),
+                  ),
+                  child: Icon(icon, color: FertaColors.forest),
+                ),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      AppText(title,
+                          style: Theme.of(context).textTheme.titleMedium),
+                      const SizedBox(height: 3),
+                      AppText(body,
+                          style: Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+                if (onTap != null) ...[
+                  const SizedBox(width: 8),
+                  const Icon(Icons.chevron_right_rounded,
+                      color: FertaColors.muted),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+}
+
+class _SoilWorkflowCard extends StatelessWidget {
+  final bool simulator;
+  final bool scanning;
+  final bool connected;
+  final bool testing;
+  final bool hasField;
+  final bool hasError;
+
+  const _SoilWorkflowCard({
+    required this.simulator,
+    required this.scanning,
+    required this.connected,
+    required this.testing,
+    required this.hasField,
+    required this.hasError,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final stage = testing
+        ? 2
+        : connected
+            ? 1
+            : 0;
+    final status = hasError
+        ? localized(context, 'Needs attention', 'கவனம் தேவை')
+        : testing
+            ? localized(context, 'Testing', 'பரிசோதிக்கிறது')
+            : scanning
+                ? localized(context, 'Searching', 'தேடுகிறது')
+                : connected
+                    ? localized(context, 'Connected', 'இணைக்கப்பட்டது')
+                    : hasField
+                        ? localized(
+                            context, 'Ready to connect', 'இணைக்கத் தயார்')
+                        : localized(context, 'Choose a field',
+                            'வயலைத் தேர்ந்தெடுக்கவும்');
+    final statusColor = hasError
+        ? FertaColors.error
+        : testing || connected
+            ? FertaColors.success
+            : FertaColors.muted;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Expanded(
+                child: Text(
+                    localized(context, 'Test workflow', 'பரிசோதனை நடைமுறை'),
+                    style: Theme.of(context).textTheme.titleMedium),
+              ),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: Container(
+                  key: ValueKey(status),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: statusColor.withValues(alpha: .1),
+                    borderRadius: BorderRadius.circular(FertaRadius.pill),
+                  ),
+                  child: Text(status,
+                      style: TextStyle(
+                          color: statusColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700)),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                _WorkflowStep(
+                  number: '1',
+                  label: localized(context, 'Field', 'வயல்'),
+                  complete: hasField,
+                  active: stage == 0 && !hasField,
+                ),
+                const _WorkflowConnector(),
+                _WorkflowStep(
+                  number: '2',
+                  label: localized(context, 'Analyzer', 'கருவி'),
+                  complete: connected,
+                  active: stage == 1 || scanning,
+                ),
+                const _WorkflowConnector(),
+                _WorkflowStep(
+                  number: '3',
+                  label: localized(context, 'Reading', 'அளவீடு'),
+                  complete: false,
+                  active: testing,
+                ),
+              ],
+            ),
+            if (testing) ...[
+              const SizedBox(height: 15),
+              const LinearProgressIndicator(minHeight: 3),
+              const SizedBox(height: 7),
+              Text(
+                simulator
+                    ? localized(context, 'Demo reading in progress · simulated',
+                        'செய்முறை அளவீடு நடைபெறுகிறது · உருவகப்படுத்தப்பட்டது')
+                    : localized(context, 'Waiting for analyzer reading',
+                        'கருவி அளவீட்டிற்காக காத்திருக்கிறது'),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WorkflowStep extends StatelessWidget {
+  final String number;
+  final String label;
+  final bool complete;
+  final bool active;
+
+  const _WorkflowStep({
+    required this.number,
+    required this.label,
+    required this.complete,
+    required this.active,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = complete || active ? FertaColors.forest : FertaColors.muted;
+    return Expanded(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            width: 26,
+            height: 26,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: complete || active ? FertaColors.leafLight : Colors.white,
+              shape: BoxShape.circle,
+              border: Border.all(
+                  color: complete || active ? color : FertaColors.line),
+            ),
+            child: complete
+                ? Icon(Icons.check_rounded, size: 16, color: color)
+                : Text(number,
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: color,
+                        fontWeight: FontWeight.w700)),
+          ),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WorkflowConnector extends StatelessWidget {
+  const _WorkflowConnector();
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 14,
+        height: 1,
+        color: FertaColors.line,
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+      );
+}
+
+class _DashboardSectionHeading extends StatelessWidget {
+  final String title;
+  final String? action;
+  final VoidCallback? onTap;
+
+  const _DashboardSectionHeading({
+    required this.title,
+    this.action,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(title,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontSize: 18,
+                      )),
+            ),
+            if (action != null && onTap != null)
+              TextButton(onPressed: onTap, child: Text(action!)),
+          ],
+        ),
+      );
+}
+
+class _SourceBadge extends StatelessWidget {
+  final String label;
+  final bool light;
+
+  const _SourceBadge({required this.label, this.light = false});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+        decoration: BoxDecoration(
+          color: light ? const Color(0xffd8e8a8) : FertaColors.warningLight,
+          borderRadius: BorderRadius.circular(FertaRadius.pill),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: light ? FertaColors.forestDeep : FertaColors.warning,
+            fontSize: 10,
+            fontWeight: FontWeight.w800,
+            letterSpacing: .5,
+          ),
+        ),
+      );
+}
+
+class _DashboardEmptyState extends StatelessWidget {
+  final IconData icon;
+  final String title, description, action;
+  final VoidCallback onTap;
+
+  const _DashboardEmptyState({
+    required this.icon,
+    required this.title,
+    required this.description,
+    required this.action,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => Card(
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, color: FertaColors.leaf, size: 26),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 4),
+                    Text(description,
+                        style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(height: 9),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: onTap,
+                        icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                        label: Text(action),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+class _LatestReadingCard extends StatelessWidget {
+  final Map<String, Object?> reading;
+  final VoidCallback onTap;
+
+  const _LatestReadingCard({required this.reading, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final measured = DateTime.parse(reading['tested_at'] as String).toLocal();
+    final isDemo = reading['source'] == 'simulated';
+    final synced = reading['sync_status'] == 'synced';
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                Expanded(
+                  child: Text(
+                    reading['field_name'] as String? ?? 'Field',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                if (isDemo)
+                  _SourceBadge(label: localized(context, 'DEMO', 'செய்முறை')),
+              ]),
+              const SizedBox(height: 4),
+              Text(
+                measured.toString().substring(0, 16) +
+                    ' · ' +
+                    localized(
+                      context,
+                      synced ? 'Synced' : 'Saved on device',
+                      synced
+                          ? 'ஒத்திசைக்கப்பட்டது'
+                          : 'சாதனத்தில் சேமிக்கப்பட்டது',
+                    ),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  _NutrientMetric(
+                      label: 'N',
+                      value: reading['n'],
+                      color: const Color(0xff39734a)),
+                  _NutrientMetric(
+                      label: 'P',
+                      value: reading['p'],
+                      color: const Color(0xff376a9f)),
+                  _NutrientMetric(
+                      label: 'K',
+                      value: reading['k'],
+                      color: const Color(0xffa96b25)),
+                  Text(reading['unit'] as String,
+                      style: Theme.of(context).textTheme.labelSmall),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NutrientMetric extends StatelessWidget {
+  final String label;
+  final Object? value;
+  final Color color;
+
+  const _NutrientMetric(
+      {required this.label, required this.value, required this.color});
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+        child: Row(
+          children: [
+            Container(
+              width: 27,
+              height: 27,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                  color: color.withValues(alpha: .1), shape: BoxShape.circle),
+              child: Text(label,
+                  style: TextStyle(
+                      color: color, fontWeight: FontWeight.w800, fontSize: 12)),
+            ),
+            const SizedBox(width: 7),
+            Flexible(
+              child: Text(value?.toString() ?? '—',
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontSize: 16)),
+            ),
+          ],
+        ),
+      );
+}
+
+class _QuickAction extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _QuickAction(
+      {required this.icon, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => OutlinedButton.icon(
+        onPressed: onTap,
+        icon: Icon(icon, size: 18),
+        label: Text(label),
+        style: OutlinedButton.styleFrom(
+          backgroundColor: FertaColors.surface,
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
+        ),
+      );
 }
 
 void _notice(BuildContext context, String message) =>
