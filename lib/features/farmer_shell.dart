@@ -46,15 +46,22 @@ class _FarmerShellState extends State<FarmerShell> {
   ];
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        body: Stack(
-          fit: StackFit.expand,
-          children: List.generate(pages.length, (pageIndex) {
-            final selected = index == pageIndex;
-            return AnimatedOpacity(
+  Widget build(BuildContext context) {
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    return Scaffold(
+      body: Stack(
+        fit: StackFit.expand,
+        children: List.generate(pages.length, (pageIndex) {
+          final selected = index == pageIndex;
+          return AnimatedSlide(
+            offset:
+                reduceMotion || selected ? Offset.zero : const Offset(0, .015),
+            duration: Duration(milliseconds: reduceMotion ? 0 : 220),
+            curve: Curves.easeOutCubic,
+            child: AnimatedOpacity(
               key: ValueKey(pageIndex),
               opacity: selected ? 1 : 0,
-              duration: const Duration(milliseconds: 180),
+              duration: Duration(milliseconds: reduceMotion ? 0 : 180),
               curve: Curves.easeOut,
               child: IgnorePointer(
                 ignoring: !selected,
@@ -66,43 +73,45 @@ class _FarmerShellState extends State<FarmerShell> {
                   ),
                 ),
               ),
-            );
-          }),
-        ),
-        bottomNavigationBar: NavigationBar(
-          selectedIndex: index,
-          onDestinationSelected: (value) {
-            if (value == index) return;
-            HapticFeedback.selectionClick();
-            setState(() => index = value);
-          },
-          destinations: [
-            NavigationDestination(
-              icon: const Icon(Icons.home_outlined),
-              selectedIcon: const Icon(Icons.home_rounded),
-              label: localized(context, 'Home', 'முகப்பு'),
             ),
-            NavigationDestination(
-              icon: const Icon(Icons.science_outlined),
-              selectedIcon: const Icon(Icons.science_rounded),
-              label: localized(context, 'Soil tests', 'மண் பரிசோதனை'),
-            ),
-            NavigationDestination(
-              icon: const Icon(Icons.forum_outlined),
-              selectedIcon: const Icon(Icons.forum_rounded),
-              label: localized(context, 'Assistant', 'உதவியாளர்'),
-            ),
-            NavigationDestination(
-              icon: const Icon(Icons.agriculture_outlined),
-              selectedIcon: const Icon(Icons.agriculture_rounded),
-              label: localized(context, 'Farms', 'பண்ணைகள்'),
-            ),
-            NavigationDestination(
-              icon: const Icon(Icons.person_outline),
-              selectedIcon: const Icon(Icons.person_rounded),
-              label: localized(context, 'Profile', 'சுயவிவரம்'),
-            ),
-          ],
-        ),
-      );
+          );
+        }),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: index,
+        onDestinationSelected: (value) {
+          if (value == index) return;
+          HapticFeedback.selectionClick();
+          setState(() => index = value);
+        },
+        destinations: [
+          NavigationDestination(
+            icon: const Icon(Icons.home_outlined),
+            selectedIcon: const Icon(Icons.home_rounded),
+            label: localized(context, 'Home', 'முகப்பு'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.science_outlined),
+            selectedIcon: const Icon(Icons.science_rounded),
+            label: localized(context, 'Soil tests', 'மண் பரிசோதனை'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.forum_outlined),
+            selectedIcon: const Icon(Icons.forum_rounded),
+            label: localized(context, 'Assistant', 'உதவியாளர்'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.agriculture_outlined),
+            selectedIcon: const Icon(Icons.agriculture_rounded),
+            label: localized(context, 'Farms', 'பண்ணைகள்'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.person_outline),
+            selectedIcon: const Icon(Icons.person_rounded),
+            label: localized(context, 'Profile', 'சுயவிவரம்'),
+          ),
+        ],
+      ),
+    );
+  }
 }

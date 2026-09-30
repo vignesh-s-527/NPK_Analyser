@@ -6,8 +6,14 @@ abstract final class FertaColors {
   static const forestDeep = Color(0xff10342b);
   static const leaf = Color(0xff4c7c55);
   static const leafLight = Color(0xffe4efdf);
+  static const sage = Color(0xffedf2e9);
   static const lime = Color(0xffd8e8a8);
   static const canvas = Color(0xfff5f6f0);
+  static const cream = Color(0xfffffcf5);
+  static const earth = Color(0xff9a6d45);
+  static const nitrogen = Color(0xff438055);
+  static const phosphorus = Color(0xff5478a6);
+  static const potassium = Color(0xffb37a37);
   static const surface = Color(0xffffffff);
   static const ink = Color(0xff1d2924);
   static const muted = Color(0xff68766d);
@@ -87,7 +93,15 @@ ThemeData buildFertaTheme() {
         color: FertaColors.muted,
         height: 1.4,
       ),
-      labelLarge: text.labelLarge?.copyWith(fontWeight: FontWeight.w600),
+      labelLarge: text.labelLarge?.copyWith(
+        fontWeight: FontWeight.w700,
+        letterSpacing: .1,
+      ),
+      displaySmall: text.displaySmall?.copyWith(
+        color: FertaColors.ink,
+        fontWeight: FontWeight.w700,
+        letterSpacing: -1.1,
+      ),
     ),
     appBarTheme: const AppBarTheme(
       backgroundColor: FertaColors.canvas,
@@ -105,12 +119,13 @@ ThemeData buildFertaTheme() {
     cardTheme: CardThemeData(
       color: FertaColors.surface,
       surfaceTintColor: Colors.transparent,
-      elevation: 0,
+      elevation: 1,
       margin: const EdgeInsets.only(bottom: FertaSpace.md),
       shape: RoundedRectangleBorder(
         side: const BorderSide(color: FertaColors.line),
         borderRadius: BorderRadius.circular(FertaRadius.md),
       ),
+      shadowColor: FertaColors.forest.withValues(alpha: .045),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
@@ -157,12 +172,41 @@ ThemeData buildFertaTheme() {
         textStyle: const TextStyle(fontWeight: FontWeight.w600),
       ),
     ),
+    iconButtonTheme: IconButtonThemeData(
+      style: IconButton.styleFrom(
+        minimumSize: const Size(48, 48),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(FertaRadius.sm),
+        ),
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: FertaColors.cream,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(FertaRadius.lg),
+      ),
+      titleTextStyle: const TextStyle(
+        color: FertaColors.ink,
+        fontSize: 20,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      backgroundColor: FertaColors.cream,
+      surfaceTintColor: Colors.transparent,
+      showDragHandle: true,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+    ),
     navigationBarTheme: NavigationBarThemeData(
-      height: 72,
+      height: 76,
       backgroundColor: FertaColors.surface,
       surfaceTintColor: Colors.transparent,
       indicatorColor: FertaColors.leafLight,
-      elevation: 0,
+      elevation: 8,
+      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
       labelTextStyle: WidgetStateProperty.resolveWith((states) => TextStyle(
             fontSize: 12,
             fontWeight: states.contains(WidgetState.selected)

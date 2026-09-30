@@ -47,8 +47,15 @@ class LaunchScreen extends StatelessWidget {
                     child: Padding(
                       padding: const EdgeInsets.all(24),
                       child: TweenAnimationBuilder<double>(
-                        tween: Tween(begin: 0, end: 1),
-                        duration: const Duration(milliseconds: 520),
+                        tween: Tween(
+                          begin: MediaQuery.disableAnimationsOf(context)
+                              ? 1.0
+                              : 0.0,
+                          end: 1.0,
+                        ),
+                        duration: MediaQuery.disableAnimationsOf(context)
+                            ? Duration.zero
+                            : const Duration(milliseconds: 520),
                         curve: Curves.easeOutCubic,
                         builder: (context, value, child) => Opacity(
                           opacity: value,
@@ -64,7 +71,14 @@ class LaunchScreen extends StatelessWidget {
                             Container(
                               height: 210,
                               decoration: BoxDecoration(
-                                color: const Color(0xff173f35),
+                                gradient: const LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [
+                                    FertaColors.forest,
+                                    FertaColors.forestDeep,
+                                  ],
+                                ),
                                 borderRadius: BorderRadius.circular(28),
                               ),
                               child: Stack(

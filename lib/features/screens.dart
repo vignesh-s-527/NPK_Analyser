@@ -7,6 +7,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:image_picker/image_picker.dart';
 import '../app/app_language.dart';
+import '../app/ferta_components.dart';
 import '../app/ferta_theme.dart';
 import '../data/local_store.dart';
 import '../models/domain.dart';
@@ -71,7 +72,18 @@ class _HomeScreenState extends State<HomeScreen> {
     final activeFarmId = f.any((farm) => farm['id'] == selectedFarmId)
         ? selectedFarmId
         : (f.isEmpty ? null : f.first['id'] as int);
-    final t = await store.latestTests();
+    final activeFields = activeFarmId == null
+        ? <Map<String, Object?>>[]
+        : await store.fields(activeFarmId);
+    final t = <Map<String, Object?>>[];
+    for (final field in activeFields) {
+      final history = await store.testHistory(field['id'] as int);
+      if (history.isNotEmpty) {
+        t.add({...history.last, 'field_name': field['name']});
+      }
+    }
+    t.sort((a, b) => DateTime.parse(b['tested_at'] as String)
+        .compareTo(DateTime.parse(a['tested_at'] as String)));
     if (mounted)
       setState(() {
         farms = f;
@@ -83,7 +95,9 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     if (widget.weatherService != null) {
       try {
-        final first = f.isEmpty ? null : f.first;
+        final first = activeFarmId == null
+            ? null
+            : f.firstWhere((farm) => farm['id'] == activeFarmId);
         weather = await widget.weatherService!
             .summary(first?['lat'] as double?, first?['lon'] as double?);
       } catch (_) {
@@ -137,6 +151,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _selectFarm(int id) async {
     setState(() => selectedFarmId = id);
+    final fields = await LocalStore.instance.fields(id);
+    final readings = <Map<String, Object?>>[];
+    for (final field in fields) {
+      final history = await LocalStore.instance.testHistory(field['id'] as int);
+      if (history.isNotEmpty) {
+        readings.add({...history.last, 'field_name': field['name']});
+      }
+    }
+    readings.sort((a, b) => DateTime.parse(b['tested_at'] as String)
+        .compareTo(DateTime.parse(a['tested_at'] as String)));
+    if (mounted) setState(() => tests = readings);
     final farm = farms.firstWhere((item) => item['id'] == id);
     if (widget.weatherService != null) {
       try {
@@ -226,7 +251,11 @@ class _HomeScreenState extends State<HomeScreen> {
               Container(
                 clipBehavior: Clip.antiAlias,
                 decoration: BoxDecoration(
-                  color: FertaColors.forest,
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [FertaColors.forest, FertaColors.forestDeep],
+                  ),
                   borderRadius: BorderRadius.circular(FertaRadius.lg),
                 ),
                 child: Stack(children: [
@@ -470,7 +499,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   _QuickAction(
                     icon: Icons.spa_outlined,
-                    label: localized(context, 'Crop planning', 'பயிர் திட்டம்'),
+                    label:
+                        localized(context, 'Crop shortlist', 'பயிர் பட்டியல்'),
                     onTap: _openCrops,
                   ),
                   _QuickAction(
@@ -492,6 +522,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     label: localized(context, 'Ask FERTA', 'FERTA-விடம் கேள்'),
                     onTap: () => _goTo(
                         2, AssistantScreen(service: widget.assistantService)),
+                  ),
+                  _QuickAction(
+                    icon: Icons.notifications_outlined,
+                    label: localized(context, 'Notifications', 'அறிவிப்புகள்'),
+                    onTap: () => _open(NotificationsScreen(
+                      calendarConnected: widget.calendarService != null,
+                      remindersConnected: widget.reminderService != null,
+                      calendarService: widget.calendarService,
+                      reminderService: widget.reminderService,
+                    )),
                   ),
                   if (weather != null || weatherError)
                     _QuickAction(
@@ -3479,7 +3519,7 @@ class _NpkTrendChart extends StatelessWidget {
     final last = DateTime.parse(tests.last['tested_at'] as String).toLocal();
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -3675,34 +3715,61 @@ class _Page extends StatelessWidget {
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 760),
-            child: TweenAnimationBuilder<double>(
-              tween: Tween(begin: 0, end: 1),
-              duration: const Duration(milliseconds: 280),
-              curve: Curves.easeOutCubic,
-              builder: (context, value, child) => Opacity(
-                opacity: value,
-                child: Transform.translate(
-                  offset: Offset(0, 8 * (1 - value)),
-                  child: child,
-                ),
-              ),
-              child: ListView(
+            child: Builder(builder: (context) {
+              final reduceMotion = MediaQuery.disableAnimationsOf(context);
+              final content = ListView(
                 padding: const EdgeInsets.fromLTRB(22, 22, 22, 32),
                 children: [
+                  Row(children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: FertaColors.forest,
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      child: const Icon(Icons.grass_rounded,
+                          size: 20, color: FertaColors.lime),
+                    ),
+                    const SizedBox(width: 10),
+                    Text('FERTA',
+                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                              color: FertaColors.forest,
+                              letterSpacing: 1.4,
+                            )),
+                    const Spacer(),
+                    const Icon(Icons.eco_outlined,
+                        size: 19, color: FertaColors.leaf),
+                  ]),
+                  const SizedBox(height: 24),
                   AppText(
                     localizedPageText(context, title),
-                    style: Theme.of(context).textTheme.headlineSmall,
+                    style: Theme.of(context).textTheme.headlineMedium,
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 7),
                   AppText(
                     localizedPageText(context, subtitle),
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
-                  const SizedBox(height: 22),
+                  const SizedBox(height: 24),
                   ...children,
                 ],
-              ),
-            ),
+              );
+              if (reduceMotion) return content;
+              return TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0, end: 1),
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOutCubic,
+                builder: (context, value, child) => Opacity(
+                  opacity: value,
+                  child: Transform.translate(
+                    offset: Offset(0, 9 * (1 - value)),
+                    child: child,
+                  ),
+                ),
+                child: content,
+              );
+            }),
           ),
         ),
       );
@@ -3731,7 +3798,11 @@ class _Card extends StatelessWidget {
                   width: 42,
                   height: 42,
                   decoration: BoxDecoration(
-                    color: FertaColors.leafLight,
+                    gradient: const LinearGradient(
+                      colors: [FertaColors.sage, FertaColors.leafLight],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
                     borderRadius: BorderRadius.circular(FertaRadius.sm),
                   ),
                   child: Icon(icon, color: FertaColors.forest),
@@ -3961,10 +4032,14 @@ class _DashboardSectionHeading extends StatelessWidget {
         child: Row(
           children: [
             Expanded(
-              child: Text(title,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontSize: 18,
-                      )),
+              child: FertaSectionLabel(children: [
+                Expanded(
+                  child: Text(title,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontSize: 18,
+                          )),
+                ),
+              ]),
             ),
             if (action != null && onTap != null)
               TextButton(onPressed: onTap, child: Text(action!)),
@@ -4067,6 +4142,9 @@ class _LatestReadingCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(children: [
+                const Icon(Icons.query_stats_rounded,
+                    size: 18, color: FertaColors.leaf),
+                const SizedBox(width: 7),
                 Expanded(
                   child: Text(
                     reading['field_name'] as String? ?? 'Field',
@@ -4091,21 +4169,21 @@ class _LatestReadingCard extends StatelessWidget {
                     ),
                 style: Theme.of(context).textTheme.bodySmall,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 18),
               Row(
                 children: [
                   _NutrientMetric(
                       label: 'N',
                       value: reading['n'],
-                      color: const Color(0xff39734a)),
+                      color: FertaColors.nitrogen),
                   _NutrientMetric(
                       label: 'P',
                       value: reading['p'],
-                      color: const Color(0xff376a9f)),
+                      color: FertaColors.phosphorus),
                   _NutrientMetric(
                       label: 'K',
                       value: reading['k'],
-                      color: const Color(0xffa96b25)),
+                      color: FertaColors.potassium),
                   Text(reading['unit'] as String,
                       style: Theme.of(context).textTheme.labelSmall),
                 ],
@@ -4142,12 +4220,20 @@ class _NutrientMetric extends StatelessWidget {
             ),
             const SizedBox(width: 7),
             Flexible(
-              child: Text(value?.toString() ?? '—',
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontSize: 16)),
+              child: value is num
+                  ? FertaAnimatedNumber(
+                      value: value as num,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontSize: 16),
+                    )
+                  : Text(value?.toString() ?? '—',
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontSize: 16)),
             ),
           ],
         ),
