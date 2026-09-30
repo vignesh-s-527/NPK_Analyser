@@ -58,3 +58,7 @@ flutter run --dart-define=NPK_API_URL=http://10.0.2.2:8000
 Backend tests are in `backend/tests`; run `python -m pip install -r requirements.txt` and then `python -m pytest -v` from `backend/`. Flutter tests and static analysis run from the repository root with `flutter test` and `flutter analyze`.
 
 See [API.md](API.md) for endpoint contracts and [INTEGRATION.md](INTEGRATION.md) for component status and integration assumptions.
+
+## Local farming tools
+
+Farmer-entered farming calendar tasks and terrace gardening checklist/preferences are stored in the device SQLite database. Calendar reminders are local notifications; there is no push provider or task synchronization. The “Crops in demand” screen reports demand data as unavailable until a market feed is configured. Expert support currently shows the backend requirements and does not display demo farmer requests. See [INTEGRATION.md](INTEGRATION.md) for limitations.

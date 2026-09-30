@@ -59,7 +59,13 @@ Set `OLLAMA_URL`, `OLLAMA_MODEL`, `CORS_ORIGIN_REGEX`, `LOG_LEVEL`, and `NPK_DAT
 
 The `NpkDeviceService` interface and simulator establish the Flutter connection seam. Replacing the simulator with a real adapter requires the analyzer vendor's BLE service and characteristic UUIDs, commands, packet format, unit definition, error behavior and validated calibration procedures. N, P and K have separate measurement paths; nitrogen uses a gas sensor. No UUID, packet structure or calibration conversion is invented here.
 
-The weather, crop-profit estimates, farming calendar, reminders, expert messaging, authentication and remote image analysis do not have active provider implementations. Farm photos are stored locally; they do not determine nutrient values. The Supabase SQL file is a draft and is not connected; enable row-level security and add owner-scoped policies before using it.
+The weather provider, crop-profit estimates, live market demand, expert messaging, authentication and remote image analysis do not have active provider implementations. The farming calendar is now local-first: farmer-entered tasks are stored in device SQLite and local Android/iOS reminders can be scheduled for them. Tasks do not sync to the backend. Notification category preferences and a separate read/unread history are not implemented. Farm photos are stored locally; they do not determine nutrient values. The Supabase SQL file is a draft and is not connected; enable row-level security and add owner-scoped policies before using it.
+
+The terrace gardening guide and its beginner checklist/preferences are stored locally. Its crop suggestions are broad starting ideas, not region or season specific recommendations; container dimensions and crop timing require a trusted local horticulture source. “Crops in demand” is an honest unavailable state for market demand and prices, with a locally saved crop research shortlist only. No demand date, price, profitability or suitability is fabricated.
+
+The Expert support page is an integration status view, not an operational expert dashboard. There are no authenticated expert roles, request queue, appointments, or expert messaging endpoints. For real multi-user use, add authenticated and owner-scoped farmer requests, secure image upload/storage, expert conversations, appointment/availability records, and role checks. Do not use local records as real farmer requests.
+
+Local reminders use the operating system notification scheduler. Permission is requested when a reminder is scheduled. They are not push notifications and are not synced or shown in an in-app read/unread notification history. Scheduling is currently tied to saving a calendar task or manually setting a reminder.
 
 ## Validation and deployment limits
 

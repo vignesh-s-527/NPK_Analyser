@@ -17,4 +17,14 @@ void main() {
       expect(const NpkResult(1, 2, 3, source: 'simulated').source, 'simulated');
     });
   });
+
+  test('calendar task retains local identity and completion state', () {
+    final when = DateTime.utc(2026, 10, 2, 9);
+    final event = CalendarEvent('Watering', 'Water seedlings', when,
+        id: 18, farmId: 4, completed: true);
+    expect(event.id, 18);
+    expect(event.farmId, 4);
+    expect(event.date, when);
+    expect(event.completed, isTrue);
+  });
 }

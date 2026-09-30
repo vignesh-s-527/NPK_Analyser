@@ -122,6 +122,9 @@ class AssistantReply {
 
 abstract interface class FarmingCalendarService {
   Future<List<CalendarEvent>> events(int farmId);
+  Future<void> saveTask(int farmId, CalendarEvent task);
+  Future<void> setCompleted(int taskId, bool completed);
+  Future<void> deleteTask(int taskId);
 }
 
 abstract interface class FarmingReminderService {

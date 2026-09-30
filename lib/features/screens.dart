@@ -96,11 +96,6 @@ class _HomeScreenState extends State<HomeScreen> {
           all.addAll(await widget.calendarService!.events(farm['id'] as int));
         }
         all.sort((a, b) => a.date.compareTo(b.date));
-        if (widget.reminderService != null) {
-          for (final event in all) {
-            await widget.reminderService!.schedule(event);
-          }
-        }
         events = all.take(3).toList();
       } catch (_) {
         calendarError = true;
@@ -478,6 +473,20 @@ class _HomeScreenState extends State<HomeScreen> {
                     onTap: _openCrops,
                   ),
                   _QuickAction(
+                      icon: Icons.yard_outlined,
+                      label: 'Terrace garden',
+                      onTap: () => _open(const TerraceGardeningScreen())),
+                  _QuickAction(
+                      icon: Icons.storefront_outlined,
+                      label: 'Crops in demand',
+                      onTap: () => _open(const CropDemandScreen())),
+                  _QuickAction(
+                      icon: Icons.calendar_month_outlined,
+                      label: 'Farm calendar',
+                      onTap: () => _open(CalendarScreen(
+                          calendarService: widget.calendarService,
+                          reminderService: widget.reminderService))),
+                  _QuickAction(
                     icon: Icons.forum_outlined,
                     label: localized(context, 'Ask FERTA', 'FERTA-விடம் கேள்'),
                     onTap: () => _goTo(
@@ -628,6 +637,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
   int? farmId;
   bool loading = true;
   bool failed = false;
+  bool weekly = false;
+  DateTime focus = DateTime.now();
 
   @override
   void initState() {
@@ -659,9 +670,96 @@ class _CalendarScreenState extends State<CalendarScreen> {
     if (mounted) setState(() => loading = false);
   }
 
+  Future<void> _editTask([CalendarEvent? task]) async {
+    final service = widget.calendarService;
+    final selectedFarm = farmId;
+    if (service == null || selectedFarm == null) return;
+    final title = TextEditingController(text: task?.title ?? '');
+    var type = task?.type ?? 'Watering';
+    var date = task?.date ?? DateTime.now().add(const Duration(days: 1));
+    final saved = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+            builder: (ctx, refresh) => AlertDialog(
+                  title: Text(
+                      task == null ? 'Add farming task' : 'Edit farming task'),
+                  content: Column(mainAxisSize: MainAxisSize.min, children: [
+                    TextField(
+                        controller: title,
+                        decoration:
+                            const InputDecoration(labelText: 'Task name')),
+                    DropdownButtonFormField<String>(
+                        initialValue: type,
+                        items: const [
+                          'Planting',
+                          'Watering',
+                          'Fertilizer',
+                          'Harvest',
+                          'Soil testing',
+                          'Other'
+                        ]
+                            .map((v) =>
+                                DropdownMenuItem(value: v, child: Text(v)))
+                            .toList(),
+                        onChanged: (v) {
+                          if (v != null) refresh(() => type = v);
+                        }),
+                    TextButton.icon(
+                        onPressed: () async {
+                          final picked = await showDatePicker(
+                              context: ctx,
+                              initialDate: date,
+                              firstDate: DateTime.now()
+                                  .subtract(const Duration(days: 365)),
+                              lastDate: DateTime.now()
+                                  .add(const Duration(days: 3650)));
+                          if (picked != null)
+                            refresh(() => date = DateTime(
+                                picked.year, picked.month, picked.day, 9));
+                        },
+                        icon: const Icon(Icons.calendar_month),
+                        label: Text('${date.day}/${date.month}/${date.year}')),
+                  ]),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('Cancel')),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('Save task'))
+                  ],
+                )));
+    if (saved != true || title.text.trim().isEmpty) return;
+    await service.saveTask(
+        selectedFarm,
+        CalendarEvent(type, title.text.trim(), date,
+            id: task?.id,
+            farmId: selectedFarm,
+            completed: task?.completed ?? false));
+    if (mounted) await _load();
+    final created =
+        events.where((event) => event.title == title.text.trim()).firstOrNull;
+    if (created != null) await widget.reminderService?.schedule(created);
+  }
+
+  List<CalendarEvent> _visibleEvents() => events.where((event) {
+        if (weekly) {
+          final start = focus.subtract(Duration(days: focus.weekday - 1));
+          return !event.date
+                  .isBefore(DateTime(start.year, start.month, start.day)) &&
+              event.date.isBefore(start.add(const Duration(days: 7)));
+        }
+        return event.date.year == focus.year && event.date.month == focus.month;
+      }).toList();
+
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const AppText('Farming calendar')),
+        appBar: AppBar(title: const AppText('Farming calendar'), actions: [
+          IconButton(
+              onPressed: () => setState(() => weekly = !weekly),
+              tooltip: 'Toggle week/month',
+              icon: Icon(weekly ? Icons.calendar_month : Icons.view_week))
+        ]),
         body: ListView(padding: const EdgeInsets.all(20), children: [
           if (farms.isNotEmpty)
             DropdownButtonFormField<int>(
@@ -703,39 +801,66 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 body:
                     'No activities were returned for this farm. Sowing, irrigation, fertilizer and harvest entries will appear when supplied by the calendar integration.')
           else
-            ...events.map((event) => Card(
+            ..._visibleEvents().map((event) => Card(
                   child: ListTile(
-                    leading: const Icon(Icons.event),
-                    title: AppText(event.title),
+                    leading: event.id == null
+                        ? const Icon(Icons.event)
+                        : Checkbox(
+                            value: event.completed,
+                            onChanged: (value) async {
+                              await widget.calendarService
+                                  ?.setCompleted(event.id!, value ?? false);
+                              await _load();
+                            }),
+                    title: Text(event.title,
+                        style: TextStyle(
+                            decoration: event.completed
+                                ? TextDecoration.lineThrough
+                                : null)),
                     subtitle:
                         AppText('${event.type} · ${event.date.toLocal()}'),
-                    trailing: widget.reminderService == null
+                    trailing: event.id == null
                         ? null
-                        : IconButton(
-                            tooltip: translateAppText(context, 'Set reminder'),
-                            icon:
-                                const Icon(Icons.notifications_active_outlined),
-                            onPressed: () async {
-                              try {
-                                await widget.reminderService!.schedule(event);
-                                if (context.mounted) {
-                                  _notice(context, 'Reminder scheduled.');
-                                }
-                              } catch (_) {
-                                if (context.mounted) {
-                                  _notice(
-                                      context, 'Could not schedule reminder.');
-                                }
+                        : PopupMenuButton<String>(
+                            onSelected: (value) async {
+                              if (value == 'edit') await _editTask(event);
+                              if (value == 'delete') {
+                                await widget.calendarService
+                                    ?.deleteTask(event.id!);
+                                await _load();
                               }
-                            }),
+                              if (value == 'remind')
+                                await widget.reminderService?.schedule(event);
+                            },
+                            itemBuilder: (_) => const [
+                                  PopupMenuItem(
+                                      value: 'edit', child: Text('Edit')),
+                                  PopupMenuItem(
+                                      value: 'remind',
+                                      child: Text('Set reminder')),
+                                  PopupMenuItem(
+                                      value: 'delete', child: Text('Delete'))
+                                ]),
                     onTap: () => _showCalendarEvent(
                         context, event, widget.reminderService),
                   ),
                 )),
-          if (widget.calendarService != null && widget.reminderService == null)
-            const AppText(
-                'Calendar is connected, but reminders are not configured.'),
+          TextButton.icon(
+              onPressed: () => setState(() => focus = DateTime(
+                  focus.year,
+                  focus.month + (weekly ? 0 : 1),
+                  focus.day + (weekly ? 7 : 0))),
+              icon: const Icon(Icons.arrow_forward),
+              label: Text('Next ${weekly ? 'week' : 'month'}')),
+          const AppText(
+              'Tasks stay on this device. Dates are user entered, not generated agronomic advice.'),
         ]),
+        floatingActionButton: widget.calendarService == null || farms.isEmpty
+            ? null
+            : FloatingActionButton.extended(
+                onPressed: () => _editTask(),
+                icon: const Icon(Icons.add),
+                label: const Text('Add task')),
       );
 }
 
@@ -1318,11 +1443,6 @@ class _CropsScreenState extends State<CropsScreen> {
       try {
         calendarEvents = await widget.calendarService!.events(selectedId);
         calendarEvents.sort((a, b) => a.date.compareTo(b.date));
-        if (widget.reminderService != null) {
-          for (final event in calendarEvents) {
-            await widget.reminderService!.schedule(event);
-          }
-        }
       } catch (_) {
         calendarFailed = true;
       }
@@ -2251,6 +2371,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         const AppText('Delete all locally stored farm data'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => _open(const LocalDataScreen()))),
+            Card(
+                child: ListTile(
+                    leading:
+                        const CircleAvatar(child: Icon(Icons.support_agent)),
+                    title: const AppText('Expert dashboard'),
+                    subtitle:
+                        const AppText('Expert workspace integration status'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => _open(const ExpertDashboardScreen()))),
             _DashboardSectionHeading(
                 title: localized(context, 'Connections', 'இணைப்புகள்')),
             Card(
@@ -2295,7 +2424,7 @@ class NotificationsScreen extends StatelessWidget {
               leading: Icon(calendarConnected
                   ? Icons.notifications_active_outlined
                   : Icons.notifications_off_outlined),
-              title: const AppText('Calendar integration'),
+              title: const AppText('On-device calendar'),
               subtitle:
                   AppText(calendarConnected ? 'Connected' : 'Not connected'),
             ),
@@ -2310,9 +2439,8 @@ class NotificationsScreen extends StatelessWidget {
                   AppText(remindersConnected ? 'Connected' : 'Not connected'),
             ),
           ),
-          AppText(calendarConnected && remindersConnected
-              ? 'Reminders can be scheduled for events supplied by your calendar integration.'
-              : 'Calendar entries and reminders require integrations configured by the app provider. No calendar is connected.'),
+          const AppText(
+              'Local reminders use Android or iOS notifications and work without push services. Permission is requested when you schedule a reminder. Notification categories, an in-app read history, and cloud delivery are not configured.'),
           if (calendarConnected)
             Padding(
               padding: const EdgeInsets.only(top: 16),
@@ -3765,3 +3893,289 @@ class _QuickAction extends StatelessWidget {
 void _notice(BuildContext context, String message) =>
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: AppText(message)));
+
+class TerraceGardeningScreen extends StatefulWidget {
+  const TerraceGardeningScreen({super.key});
+  @override
+  State<TerraceGardeningScreen> createState() => _TerraceGardeningScreenState();
+}
+
+class _TerraceGardeningScreenState extends State<TerraceGardeningScreen> {
+  static const steps = [
+    'Choose a stable, well-drained growing area',
+    'Check sunlight across the day',
+    'Choose containers with drainage holes',
+    'Use a clean growing medium and compost',
+    'Start with a few easy-to-manage plants',
+    'Check leaves regularly and harvest gently'
+  ];
+  String space = 'Small balcony',
+      sunlight = 'Not sure',
+      experience = 'Beginner',
+      budget = 'Low';
+  List<String> checked = [];
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final p = await LocalStore.instance.terraceProgress();
+    final raw = jsonDecode(p['checklist'] as String);
+    if (!mounted) return;
+    setState(() {
+      space = p['space'] as String;
+      sunlight = p['sunlight'] as String;
+      experience = p['experience'] as String;
+      budget = p['budget'] as String;
+      checked = raw is List ? raw.whereType<String>().toList() : [];
+    });
+  }
+
+  Future<void> _save() => LocalStore.instance.saveTerraceProgress(
+      space: space,
+      sunlight: sunlight,
+      experience: experience,
+      budget: budget,
+      checklist: checked);
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const AppText('Terrace gardening')),
+        body: ListView(padding: const EdgeInsets.all(20), children: [
+          Container(
+              padding: const EdgeInsets.all(22),
+              decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                      colors: [FertaColors.forest, FertaColors.leaf]),
+                  borderRadius: BorderRadius.circular(24)),
+              child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.yard, color: FertaColors.lime, size: 34),
+                    SizedBox(height: 12),
+                    Text('Grow at your pace',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold)),
+                    SizedBox(height: 8),
+                    Text(
+                        'Begin with a few containers. Check local weather, roof load and seasonal advice before planting.',
+                        style: TextStyle(color: Colors.white, height: 1.4))
+                  ])),
+          const SizedBox(height: 18),
+          const Text('Your space',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          _choice(
+              'Available space',
+              space,
+              ['Small balcony', 'Medium terrace', 'Large terrace'],
+              (v) => space = v),
+          _choice(
+              'Direct sunlight',
+              sunlight,
+              ['Not sure', 'Under 3 hours', '3–6 hours', 'Over 6 hours'],
+              (v) => sunlight = v),
+          _choice(
+              'Experience',
+              experience,
+              ['Beginner', 'Some experience', 'Experienced'],
+              (v) => experience = v),
+          _choice('Budget', budget, ['Low', 'Moderate', 'Flexible'],
+              (v) => budget = v),
+          const SizedBox(height: 16),
+          Card(
+              child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Beginner checklist',
+                            style: TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 6),
+                        ...steps.map((step) => CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            value: checked.contains(step),
+                            title: Text(step),
+                            onChanged: (value) async {
+                              setState(() {
+                                if (value == true) {
+                                  checked.add(step);
+                                } else {
+                                  checked.remove(step);
+                                }
+                              });
+                              await _save();
+                            }))
+                      ]))),
+          Card(
+              child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: const [
+                        Text('Starter crop ideas',
+                            style: TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold)),
+                        SizedBox(height: 8),
+                        Text(
+                            'Leafy greens, coriander, mint and chilli are common home-garden choices. Match the crop to your local season and sunlight; container size, watering and duration vary by variety and climate. Follow a local horticulture guide or seed packet for specifics.'),
+                        SizedBox(height: 12),
+                        Text(
+                            'Use containers with drainage. Water when the growing medium needs it; avoid leaving roots waterlogged. Compost is useful, but fertilizer amounts depend on the medium and crop.')
+                      ]))),
+          Card(
+              child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: const [
+                        Text('Common problems',
+                            style: TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold)),
+                        SizedBox(height: 8),
+                        Text(
+                            'Avoid overwatering, overcrowding and placing heavy wet pots where roof capacity is uncertain. Inspect leaves often. For pests or disease, take clear photos and seek a local horticulture adviser; this app has no image diagnosis service configured.')
+                      ]))),
+        ]),
+      );
+
+  Widget _choice(String label, String value, List<String> values,
+          ValueChanged<String> setValue) =>
+      DropdownButtonFormField<String>(
+          initialValue: value,
+          decoration: InputDecoration(labelText: label),
+          items: values
+              .map((v) => DropdownMenuItem(value: v, child: Text(v)))
+              .toList(),
+          onChanged: (next) async {
+            if (next == null) return;
+            setState(() => setValue(next));
+            await _save();
+          });
+}
+
+class CropDemandScreen extends StatefulWidget {
+  const CropDemandScreen({super.key});
+  @override
+  State<CropDemandScreen> createState() => _CropDemandScreenState();
+}
+
+class _CropDemandScreenState extends State<CropDemandScreen> {
+  static const crops = [
+    'Rice',
+    'Maize',
+    'Groundnut',
+    'Cotton',
+    'Millet',
+    'Tomato',
+    'Banana',
+    'Pulses',
+    'Potato',
+    'Onion'
+  ];
+  List<String> saved = [];
+  String type = 'All';
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final values = await LocalStore.instance.savedCrops();
+    if (mounted) setState(() => saved = values);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+      appBar: AppBar(title: const AppText('Crops in demand')),
+      body: ListView(padding: const EdgeInsets.all(20), children: [
+        Card(
+            color: FertaColors.warningLight,
+            child: const ListTile(
+                leading: Icon(Icons.info_outline, color: FertaColors.warning),
+                title: Text('Market demand feed unavailable'),
+                subtitle: Text(
+                    'No market source is configured. We do not have verified demand, prices, update dates, or regional suitability to show.'))),
+        const Text('Crop information shortlist',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const Padding(
+            padding: EdgeInsets.only(top: 6, bottom: 14),
+            child: Text(
+                'These are crop names for your own research, not demand rankings or recommendations. Compare local season, water, soil, budget and buyer access before choosing.')),
+        DropdownButtonFormField<String>(
+            initialValue: type,
+            decoration: const InputDecoration(labelText: 'Crop type'),
+            items: const [
+              'All',
+              'Cereal',
+              'Pulse',
+              'Oilseed',
+              'Vegetable',
+              'Other'
+            ].map((v) => DropdownMenuItem(value: v, child: Text(v))).toList(),
+            onChanged: (v) => setState(() => type = v ?? 'All')),
+        const SizedBox(height: 12),
+        ...crops.where((crop) => type == 'All' || _matches(crop, type)).map(
+            (crop) => Card(
+                child: ListTile(
+                    leading: CircleAvatar(
+                        backgroundColor: FertaColors.leafLight,
+                        child:
+                            const Icon(Icons.eco, color: FertaColors.forest)),
+                    title: Text(crop),
+                    subtitle: const Text(
+                        'Market demand: unavailable · Local season and requirements: check with a regional source'),
+                    trailing: IconButton(
+                        tooltip: saved.contains(crop)
+                            ? 'Remove from shortlist'
+                            : 'Save crop',
+                        icon: Icon(saved.contains(crop)
+                            ? Icons.bookmark
+                            : Icons.bookmark_border),
+                        onPressed: () async {
+                          await LocalStore.instance
+                              .setCropSaved(crop, !saved.contains(crop));
+                          await _load();
+                        })))),
+        if (saved.isNotEmpty) Text('Saved shortlist: ${saved.join(', ')}'),
+      ]));
+  bool _matches(String crop, String selected) => switch (selected) {
+        'Cereal' => ['Rice', 'Maize', 'Millet'].contains(crop),
+        'Pulse' => crop == 'Pulses',
+        'Oilseed' => crop == 'Groundnut',
+        'Vegetable' => ['Tomato', 'Potato', 'Onion'].contains(crop),
+        _ => crop == 'Cotton' || crop == 'Banana',
+      };
+}
+
+class ExpertDashboardScreen extends StatelessWidget {
+  const ExpertDashboardScreen({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+      appBar: AppBar(title: const AppText('Expert support')),
+      body: ListView(padding: const EdgeInsets.all(20), children: const [
+        Card(
+            child: ListTile(
+                leading: Icon(Icons.lock_outline),
+                title: Text('Expert workspace needs a backend'),
+                subtitle: Text(
+                    'This app has no verified expert roles, farmer request queue, appointments, or messaging API. No real farmer requests are available on this device.'))),
+        Card(
+            child: Padding(
+                padding: EdgeInsets.all(16),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('What is needed for a live dashboard',
+                          style: TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold)),
+                      SizedBox(height: 10),
+                      Text(
+                          'Add authenticated expert accounts and role checks, user-scoped farmer support requests, secure image upload and storage, conversation endpoints, appointment records and availability, and audit controls. Keep this local-only app in farmer mode until that service is configured.')
+                    ]))),
+      ]));
+}

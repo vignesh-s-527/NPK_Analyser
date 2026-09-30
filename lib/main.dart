@@ -6,10 +6,12 @@ import 'models/domain.dart';
 import 'app/npk_app.dart';
 import 'app/app_language.dart';
 import 'data/local_store.dart';
+import 'services/local_farming_services.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await LocalStore.instance.initialize();
+  await LocalFarmingReminderService.instance.initialize();
   final profile = await LocalStore.instance.profile();
   AppLanguage.select((profile?['language'] as String?) ?? 'en');
   const apiUrl = String.fromEnvironment('NPK_API_URL',
@@ -36,5 +38,7 @@ Future<void> main() async {
     fertilizerAdvice: ApiFertilizerAdviceService(backend),
     readingSubmission: ApiReadingSubmissionService(backend),
     assistant: BackendAssistantService(backend, latestReading: latestReading),
+    calendar: const LocalFarmingCalendarService(),
+    reminders: LocalFarmingReminderService.instance,
   )));
 }

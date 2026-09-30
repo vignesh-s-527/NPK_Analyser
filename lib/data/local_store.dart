@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
+import '../models/domain.dart';
 
 /// Local-only data store. Bump schema version and add a migration case on change.
 class LocalStore {
@@ -11,7 +12,7 @@ class LocalStore {
   Future<void> initialize() async {
     final root = await getDatabasesPath();
     db = await openDatabase(p.join(root, 'npk_farmer.db'),
-        version: 4,
+        version: 5,
         onCreate: (d, _) async {
           await d.execute(
               'CREATE TABLE profile(id INTEGER PRIMARY KEY CHECK(id=1), name TEXT, language TEXT NOT NULL DEFAULT \'en\', tutorial_done INTEGER NOT NULL DEFAULT 0)');
@@ -31,6 +32,7 @@ class LocalStore {
               'CREATE TABLE crops(id INTEGER PRIMARY KEY AUTOINCREMENT, farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE, crop TEXT NOT NULL, UNIQUE(farm_id,crop))');
           await d.execute(
               'CREATE TABLE chat_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL CHECK(role IN (\'farmer\', \'assistant\')), content TEXT NOT NULL, sources TEXT NOT NULL DEFAULT \'[]\', created_at TEXT NOT NULL, answer_type TEXT, provider_status TEXT, insufficient_information INTEGER NOT NULL DEFAULT 0)');
+          await _createFarmingTables(d);
         },
         onUpgrade: (d, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -53,8 +55,86 @@ class LocalStore {
             await d.execute(
                 'ALTER TABLE chat_messages ADD COLUMN insufficient_information INTEGER NOT NULL DEFAULT 0');
           }
+          if (oldVersion < 5) await _createFarmingTables(d);
         },
         onConfigure: (d) async => d.execute('PRAGMA foreign_keys=ON'));
+  }
+
+  Future<void> _createFarmingTables(DatabaseExecutor d) async {
+    await d.execute(
+        'CREATE TABLE farming_tasks(id INTEGER PRIMARY KEY AUTOINCREMENT, farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE, type TEXT NOT NULL, title TEXT NOT NULL, due_at TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0)');
+    await d.execute(
+        'CREATE TABLE terrace_progress(id INTEGER PRIMARY KEY CHECK(id=1), space TEXT NOT NULL DEFAULT \'small\', sunlight TEXT NOT NULL DEFAULT \'unknown\', experience TEXT NOT NULL DEFAULT \'beginner\', budget TEXT NOT NULL DEFAULT \'low\', checklist TEXT NOT NULL DEFAULT \'[]\')');
+    await d.execute('CREATE TABLE saved_crops(crop TEXT PRIMARY KEY)');
+    await d.insert('terrace_progress', {'id': 1});
+  }
+
+  Future<List<CalendarEvent>> calendarTasks(int farmId) async {
+    final rows = await db.query('farming_tasks',
+        where: 'farm_id=?', whereArgs: [farmId], orderBy: 'due_at');
+    return rows
+        .map((r) => CalendarEvent(r['type'] as String, r['title'] as String,
+            DateTime.parse(r['due_at'] as String),
+            id: r['id'] as int,
+            farmId: r['farm_id'] as int,
+            completed: r['completed'] == 1))
+        .toList();
+  }
+
+  Future<void> saveCalendarTask(int farmId, CalendarEvent task) async {
+    final values = {
+      'farm_id': farmId,
+      'type': task.type,
+      'title': task.title,
+      'due_at': task.date.toUtc().toIso8601String(),
+      'completed': task.completed ? 1 : 0
+    };
+    if (task.id == null) {
+      await db.insert('farming_tasks', values);
+    } else {
+      await db
+          .update('farming_tasks', values, where: 'id=?', whereArgs: [task.id]);
+    }
+  }
+
+  Future<void> completeCalendarTask(int id, bool completed) async {
+    await db.update('farming_tasks', {'completed': completed ? 1 : 0},
+        where: 'id=?', whereArgs: [id]);
+  }
+
+  Future<void> deleteCalendarTask(int id) async {
+    await db.delete('farming_tasks', where: 'id=?', whereArgs: [id]);
+  }
+
+  Future<Map<String, Object?>> terraceProgress() async =>
+      (await db.query('terrace_progress', where: 'id=1')).first;
+  Future<void> saveTerraceProgress(
+          {required String space,
+          required String sunlight,
+          required String experience,
+          required String budget,
+          required List<String> checklist}) async =>
+      db.update(
+          'terrace_progress',
+          {
+            'space': space,
+            'sunlight': sunlight,
+            'experience': experience,
+            'budget': budget,
+            'checklist': jsonEncode(checklist)
+          },
+          where: 'id=1');
+  Future<List<String>> savedCrops() async =>
+      (await db.query('saved_crops', orderBy: 'crop'))
+          .map((r) => r['crop'] as String)
+          .toList();
+  Future<void> setCropSaved(String crop, bool saved) async {
+    if (saved) {
+      await db.insert('saved_crops', {'crop': crop},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    } else {
+      await db.delete('saved_crops', where: 'crop=?', whereArgs: [crop]);
+    }
   }
 
   Future<Map<String, Object?>?> profile() async {
@@ -143,6 +223,8 @@ class LocalStore {
         await txn.delete('devices');
         await txn.delete('photos');
         await txn.delete('chat_messages');
+        await txn.delete('farming_tasks');
+        await txn.delete('saved_crops');
       });
   Future<int> addChatMessage(
           {required String role,
