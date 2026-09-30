@@ -5,9 +5,18 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:npk_farmer/models/domain.dart';
 import 'package:npk_farmer/services/backend_services.dart';
+import 'package:npk_farmer/services/local_farming_services.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('calendar task types map to independent reminder categories', () {
+    expect(notificationCategoryForTask('Watering'), 'watering');
+    expect(notificationCategoryForTask('Fertilizer'), 'fertilizer');
+    expect(notificationCategoryForTask('Planting'), 'planting');
+    expect(notificationCategoryForTask('Harvest'), 'harvesting');
+    expect(notificationCategoryForTask('Other'), 'calendar_tasks');
+  });
 
   test('client sends reading provenance and maps safe advice and AI status',
       () async {

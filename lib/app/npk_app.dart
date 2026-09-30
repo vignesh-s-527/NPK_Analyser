@@ -6,6 +6,8 @@ import '../data/local_store.dart';
 import '../features/farmer_shell.dart';
 import '../services/contracts.dart';
 
+final GlobalKey<NavigatorState> fertaNavigatorKey = GlobalKey<NavigatorState>();
+
 class NpkApp extends StatelessWidget {
   final FarmerServices services;
   const NpkApp({super.key, this.services = const FarmerServices()});
@@ -13,6 +15,7 @@ class NpkApp extends StatelessWidget {
   Widget build(BuildContext context) => ValueListenableBuilder<Locale>(
         valueListenable: AppLanguage.locale,
         builder: (context, locale, _) => MaterialApp(
+          navigatorKey: fertaNavigatorKey,
           title: 'FERTA',
           debugShowCheckedModeBanner: false,
           locale: locale,

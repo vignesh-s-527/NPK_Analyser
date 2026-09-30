@@ -52,8 +52,8 @@ class SoilTest {
 class CalendarEvent {
   final String type, title;
   final DateTime date;
-  final int? id, farmId;
+  final int? id, farmId, fieldId;
   final bool completed;
   const CalendarEvent(this.type, this.title, this.date,
-      {this.id, this.farmId, this.completed = false});
+      {this.id, this.farmId, this.fieldId, this.completed = false});
 }

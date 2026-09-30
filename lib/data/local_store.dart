@@ -12,7 +12,7 @@ class LocalStore {
   Future<void> initialize() async {
     final root = await getDatabasesPath();
     db = await openDatabase(p.join(root, 'npk_farmer.db'),
-        version: 5,
+        version: 7,
         onCreate: (d, _) async {
           await d.execute(
               'CREATE TABLE profile(id INTEGER PRIMARY KEY CHECK(id=1), name TEXT, language TEXT NOT NULL DEFAULT \'en\', tutorial_done INTEGER NOT NULL DEFAULT 0)');
@@ -33,6 +33,9 @@ class LocalStore {
           await d.execute(
               'CREATE TABLE chat_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL CHECK(role IN (\'farmer\', \'assistant\')), content TEXT NOT NULL, sources TEXT NOT NULL DEFAULT \'[]\', created_at TEXT NOT NULL, answer_type TEXT, provider_status TEXT, insufficient_information INTEGER NOT NULL DEFAULT 0)');
           await _createFarmingTables(d);
+          await _createNotificationTables(d);
+          await d.execute(
+              'ALTER TABLE farming_tasks ADD COLUMN field_id INTEGER REFERENCES fields(id) ON DELETE SET NULL');
         },
         onUpgrade: (d, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -56,6 +59,10 @@ class LocalStore {
                 'ALTER TABLE chat_messages ADD COLUMN insufficient_information INTEGER NOT NULL DEFAULT 0');
           }
           if (oldVersion < 5) await _createFarmingTables(d);
+          if (oldVersion < 6) await _createNotificationTables(d);
+          if (oldVersion < 7)
+            await d.execute(
+                'ALTER TABLE farming_tasks ADD COLUMN field_id INTEGER REFERENCES fields(id) ON DELETE SET NULL');
         },
         onConfigure: (d) async => d.execute('PRAGMA foreign_keys=ON'));
   }
@@ -69,6 +76,79 @@ class LocalStore {
     await d.insert('terrace_progress', {'id': 1});
   }
 
+  Future<void> _createNotificationTables(DatabaseExecutor d) async {
+    await d.execute(
+        'CREATE TABLE notification_preferences(category TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)');
+    await d.execute(
+        'CREATE TABLE notification_history(id INTEGER PRIMARY KEY AUTOINCREMENT, notification_id INTEGER NOT NULL, category TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, scheduled_for TEXT NOT NULL, related_farm_id INTEGER, related_task_id INTEGER, is_read INTEGER NOT NULL DEFAULT 0, is_scheduled INTEGER NOT NULL DEFAULT 0)');
+    for (final category in const [
+      'watering',
+      'fertilizer',
+      'planting',
+      'harvesting',
+      'calendar_tasks',
+      'appointments'
+    ]) {
+      await d.insert(
+          'notification_preferences', {'category': category, 'enabled': 1});
+    }
+  }
+
+  Future<Map<String, bool>> notificationPreferences() async {
+    final rows = await db.query('notification_preferences');
+    return {
+      for (final row in rows) row['category'] as String: row['enabled'] == 1
+    };
+  }
+
+  Future<void> setNotificationPreference(String category, bool enabled) async =>
+      db.insert('notification_preferences',
+          {'category': category, 'enabled': enabled ? 1 : 0},
+          conflictAlgorithm: ConflictAlgorithm.replace);
+  Future<int> addNotification(
+          {required int notificationId,
+          required String category,
+          required String title,
+          required String body,
+          required DateTime scheduledFor,
+          int? farmId,
+          int? taskId}) =>
+      db.insert('notification_history', {
+        'notification_id': notificationId,
+        'category': category,
+        'title': title,
+        'body': body,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+        'scheduled_for': scheduledFor.toUtc().toIso8601String(),
+        'related_farm_id': farmId,
+        'related_task_id': taskId,
+        'is_scheduled': 0
+      });
+  Future<void> markReminderScheduled(int historyId) async {
+    await db.update('notification_history', {'is_scheduled': 1},
+        where: 'id=?', whereArgs: [historyId]);
+  }
+
+  Future<List<Map<String, Object?>>> notificationHistory() =>
+      db.query('notification_history', orderBy: 'created_at DESC');
+  Future<void> markNotificationRead(int id) async {
+    await db.update('notification_history', {'is_read': 1},
+        where: 'id=?', whereArgs: [id]);
+  }
+
+  Future<void> markAllNotificationsRead() async {
+    await db.update('notification_history', {'is_read': 1});
+  }
+
+  Future<void> clearNotificationHistory() async {
+    await db.delete('notification_history');
+  }
+
+  Future<void> markReminderCancelled(int notificationId) async {
+    await db.update('notification_history', {'is_scheduled': 0},
+        where: 'notification_id=?', whereArgs: [notificationId]);
+  }
+
   Future<List<CalendarEvent>> calendarTasks(int farmId) async {
     final rows = await db.query('farming_tasks',
         where: 'farm_id=?', whereArgs: [farmId], orderBy: 'due_at');
@@ -77,23 +157,26 @@ class LocalStore {
             DateTime.parse(r['due_at'] as String),
             id: r['id'] as int,
             farmId: r['farm_id'] as int,
+            fieldId: r['field_id'] as int?,
             completed: r['completed'] == 1))
         .toList();
   }
 
-  Future<void> saveCalendarTask(int farmId, CalendarEvent task) async {
+  Future<int> saveCalendarTask(int farmId, CalendarEvent task) async {
     final values = {
       'farm_id': farmId,
       'type': task.type,
       'title': task.title,
       'due_at': task.date.toUtc().toIso8601String(),
-      'completed': task.completed ? 1 : 0
+      'completed': task.completed ? 1 : 0,
+      'field_id': task.fieldId,
     };
     if (task.id == null) {
-      await db.insert('farming_tasks', values);
+      return db.insert('farming_tasks', values);
     } else {
       await db
           .update('farming_tasks', values, where: 'id=?', whereArgs: [task.id]);
+      return task.id!;
     }
   }
 
@@ -225,6 +308,7 @@ class LocalStore {
         await txn.delete('chat_messages');
         await txn.delete('farming_tasks');
         await txn.delete('saved_crops');
+        await txn.delete('notification_history');
       });
   Future<int> addChatMessage(
           {required String role,

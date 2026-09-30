@@ -7,11 +7,26 @@ import 'app/npk_app.dart';
 import 'app/app_language.dart';
 import 'data/local_store.dart';
 import 'services/local_farming_services.dart';
+import 'features/screens.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await LocalStore.instance.initialize();
   await LocalFarmingReminderService.instance.initialize();
+  LocalFarmingReminderService.onCalendarReminderTap = (farmId, taskId) {
+    final route = MaterialPageRoute<void>(
+      builder: (_) => CalendarScreen(
+        calendarService: const LocalFarmingCalendarService(),
+        reminderService: LocalFarmingReminderService.instance,
+        initialFarmId: farmId,
+        focusTaskId: taskId,
+      ),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      fertaNavigatorKey.currentState?.push(route);
+    });
+  };
+  LocalFarmingReminderService.instance.dispatchPendingTap();
   final profile = await LocalStore.instance.profile();
   AppLanguage.select((profile?['language'] as String?) ?? 'en');
   const apiUrl = String.fromEnvironment('NPK_API_URL',

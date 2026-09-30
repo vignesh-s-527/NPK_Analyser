@@ -21,9 +21,10 @@ void main() {
   test('calendar task retains local identity and completion state', () {
     final when = DateTime.utc(2026, 10, 2, 9);
     final event = CalendarEvent('Watering', 'Water seedlings', when,
-        id: 18, farmId: 4, completed: true);
+        id: 18, farmId: 4, fieldId: 7, completed: true);
     expect(event.id, 18);
     expect(event.farmId, 4);
+    expect(event.fieldId, 7);
     expect(event.date, when);
     expect(event.completed, isTrue);
   });

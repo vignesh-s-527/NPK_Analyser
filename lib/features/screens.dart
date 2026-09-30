@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:image_picker/image_picker.dart';
 import '../app/app_language.dart';
 import '../app/ferta_theme.dart';
 import '../data/local_store.dart';
@@ -625,7 +626,13 @@ class _WeatherScreenState extends State<WeatherScreen> {
 class CalendarScreen extends StatefulWidget {
   final FarmingCalendarService? calendarService;
   final FarmingReminderService? reminderService;
-  const CalendarScreen({super.key, this.calendarService, this.reminderService});
+  final int? initialFarmId, focusTaskId;
+  const CalendarScreen(
+      {super.key,
+      this.calendarService,
+      this.reminderService,
+      this.initialFarmId,
+      this.focusTaskId});
 
   @override
   State<CalendarScreen> createState() => _CalendarScreenState();
@@ -633,8 +640,9 @@ class CalendarScreen extends StatefulWidget {
 
 class _CalendarScreenState extends State<CalendarScreen> {
   List<Map<String, Object?>> farms = [];
+  List<Map<String, Object?>> fields = [];
   List<CalendarEvent> events = [];
-  int? farmId;
+  int? farmId, selectedFieldId;
   bool loading = true;
   bool failed = false;
   bool weekly = false;
@@ -646,7 +654,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     _load();
   }
 
-  Future<void> _load({int? selectedFarmId}) async {
+  Future<void> _load({int? selectedFarmId, int? selectedField}) async {
     if (mounted) {
       setState(() {
         loading = true;
@@ -656,11 +664,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
     try {
       farms = await LocalStore.instance.farms();
       farmId = selectedFarmId ??
+          widget.initialFarmId ??
           farmId ??
           (farms.isEmpty ? null : farms.first['id'] as int);
+      fields = farmId == null ? [] : await LocalStore.instance.fields(farmId!);
+      selectedFieldId = fields.any((field) => field['id'] == selectedField)
+          ? selectedField
+          : (fields.any((field) => field['id'] == selectedFieldId)
+              ? selectedFieldId
+              : null);
       if (widget.calendarService != null && farmId != null) {
         events = await widget.calendarService!.events(farmId!);
         events.sort((a, b) => a.date.compareTo(b.date));
+        final target =
+            events.where((event) => event.id == widget.focusTaskId).firstOrNull;
+        if (target != null) focus = target.date;
       } else {
         events = [];
       }
@@ -677,6 +695,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     final title = TextEditingController(text: task?.title ?? '');
     var type = task?.type ?? 'Watering';
     var date = task?.date ?? DateTime.now().add(const Duration(days: 1));
+    var fieldKey = task?.fieldId ?? selectedFieldId ?? -1;
     final saved = await showDialog<bool>(
         context: context,
         builder: (ctx) => StatefulBuilder(
@@ -704,6 +723,22 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         onChanged: (v) {
                           if (v != null) refresh(() => type = v);
                         }),
+                    if (fields.isNotEmpty)
+                      DropdownButtonFormField<int>(
+                        initialValue: fieldKey,
+                        decoration: const InputDecoration(
+                            labelText: 'Field (optional)'),
+                        items: [
+                          const DropdownMenuItem(
+                              value: -1, child: Text('Whole farm')),
+                          ...fields.map((field) => DropdownMenuItem(
+                              value: field['id'] as int,
+                              child: Text(field['name'] as String)))
+                        ],
+                        onChanged: (value) {
+                          if (value != null) refresh(() => fieldKey = value);
+                        },
+                      ),
                     TextButton.icon(
                         onPressed: () async {
                           final picked = await showDatePicker(
@@ -719,6 +754,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         },
                         icon: const Icon(Icons.calendar_month),
                         label: Text('${date.day}/${date.month}/${date.year}')),
+                    TextButton.icon(
+                        onPressed: () async {
+                          final picked = await showTimePicker(
+                              context: ctx,
+                              initialTime: TimeOfDay.fromDateTime(date));
+                          if (picked != null) {
+                            refresh(() => date = DateTime(date.year, date.month,
+                                date.day, picked.hour, picked.minute));
+                          }
+                        },
+                        icon: const Icon(Icons.schedule),
+                        label: Text(TimeOfDay.fromDateTime(date).format(ctx))),
                   ]),
                   actions: [
                     TextButton(
@@ -730,19 +777,22 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   ],
                 )));
     if (saved != true || title.text.trim().isEmpty) return;
-    await service.saveTask(
+    final savedId = await service.saveTask(
         selectedFarm,
         CalendarEvent(type, title.text.trim(), date,
             id: task?.id,
             farmId: selectedFarm,
+            fieldId: fieldKey < 0 ? null : fieldKey,
             completed: task?.completed ?? false));
     if (mounted) await _load();
-    final created =
-        events.where((event) => event.title == title.text.trim()).firstOrNull;
+    final created = events.where((event) => event.id == savedId).firstOrNull;
     if (created != null) await widget.reminderService?.schedule(created);
   }
 
   List<CalendarEvent> _visibleEvents() => events.where((event) {
+        if (selectedFieldId != null &&
+            event.fieldId != null &&
+            event.fieldId != selectedFieldId) return false;
         if (weekly) {
           final start = focus.subtract(Duration(days: focus.weekday - 1));
           return !event.date
@@ -774,7 +824,25 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   .toList(),
               onChanged: (id) => id == null ? null : _load(selectedFarmId: id),
             ),
+          if (fields.isNotEmpty)
+            DropdownButtonFormField<int>(
+              initialValue: selectedFieldId ?? -1,
+              decoration: const InputDecoration(labelText: 'Field filter'),
+              items: [
+                const DropdownMenuItem(value: -1, child: Text('All fields')),
+                ...fields.map((field) => DropdownMenuItem(
+                    value: field['id'] as int,
+                    child: Text(field['name'] as String)))
+              ],
+              onChanged: (id) => setState(
+                  () => selectedFieldId = id == null || id < 0 ? null : id),
+            ),
           const SizedBox(height: 16),
+          Text(
+              weekly
+                  ? 'Week of ${focus.subtract(Duration(days: focus.weekday - 1)).day}/${focus.subtract(Duration(days: focus.weekday - 1)).month}/${focus.year}'
+                  : '${_monthName(focus.month)} ${focus.year}',
+              style: Theme.of(context).textTheme.titleLarge),
           if (widget.calendarService == null)
             const _Card(
                 icon: Icons.calendar_month,
@@ -799,7 +867,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 icon: Icons.event_available,
                 title: 'No activities yet',
                 body:
-                    'No activities were returned for this farm. Sowing, irrigation, fertilizer and harvest entries will appear when supplied by the calendar integration.')
+                    'No tasks for this farm in this period. Add a task and set a local reminder if you need one.')
           else
             ..._visibleEvents().map((event) => Card(
                   child: ListTile(
@@ -808,6 +876,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         : Checkbox(
                             value: event.completed,
                             onChanged: (value) async {
+                              if (value == true) {
+                                await widget.reminderService?.cancel(event);
+                              } else {
+                                await widget.reminderService?.schedule(event);
+                              }
                               await widget.calendarService
                                   ?.setCompleted(event.id!, value ?? false);
                               await _load();
@@ -825,6 +898,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             onSelected: (value) async {
                               if (value == 'edit') await _editTask(event);
                               if (value == 'delete') {
+                                await widget.reminderService?.cancel(event);
                                 await widget.calendarService
                                     ?.deleteTask(event.id!);
                                 await _load();
@@ -863,6 +937,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 label: const Text('Add task')),
       );
 }
+
+String _monthName(int month) => const [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December'
+    ][month - 1];
 
 Future<void> _showCalendarEvent(BuildContext context, CalendarEvent event,
     FarmingReminderService? reminders) async {
@@ -1700,6 +1789,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
   final messages = <_ChatItem>[];
   bool sending = false, listening = false;
   String? lastQuestion;
+  String? failedQuestion;
+  File? diseasePhoto;
+  String diseaseCrop = 'Tomato';
+  final imagePicker = ImagePicker();
 
   @override
   void initState() {
@@ -1738,19 +1831,22 @@ class _AssistantScreenState extends State<AssistantScreen> {
     return (profile?['language'] as String?) ?? 'en';
   }
 
-  Future<void> _ask() async {
-    final question = controller.text.trim();
+  Future<void> _ask({String? retryQuestion}) async {
+    final question = retryQuestion ?? controller.text.trim();
+    final retry = retryQuestion != null;
     final service = widget.service;
     if (question.isEmpty || service == null || sending) return;
-    controller.clear();
+    if (!retry) controller.clear();
     setState(() {
-      messages.add(_ChatItem.question(question));
+      if (!retry) messages.add(_ChatItem.question(question));
       sending = true;
       lastQuestion = question;
+      failedQuestion = null;
     });
     try {
-      await LocalStore.instance
-          .addChatMessage(role: 'farmer', content: question);
+      if (!retry)
+        await LocalStore.instance
+            .addChatMessage(role: 'farmer', content: question);
       final language = await _language();
       AssistantReply? latest;
       await for (final reply in service.ask(question, language)) {
@@ -1767,16 +1863,20 @@ class _AssistantScreenState extends State<AssistantScreen> {
         insufficientInformation: answer.insufficientInformation,
       );
       if (mounted) setState(() => messages.add(_ChatItem.answer(answer)));
+      failedQuestion = null;
       await tts.setLanguage(language == 'ta' ? 'ta-IN' : 'en-US');
       await tts.speak(answer.text);
     } catch (_) {
-      if (mounted)
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: AppText(
-                'The assistant could not answer right now. You can contact an agricultural expert.')));
+      if (mounted) setState(() => failedQuestion = question);
     } finally {
       if (mounted) setState(() => sending = false);
     }
+  }
+
+  Future<void> _selectDiseasePhoto() async {
+    final file = await imagePicker.pickImage(
+        source: ImageSource.gallery, imageQuality: 82, maxWidth: 1800);
+    if (file != null && mounted) setState(() => diseasePhoto = File(file.path));
   }
 
   Future<void> _listen() async {
@@ -2093,6 +2193,68 @@ class _AssistantScreenState extends State<AssistantScreen> {
                                   _message(messages[index]),
                             ),
                     ),
+                    if (failedQuestion != null)
+                      Card(
+                        margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        color: FertaColors.errorLight,
+                        child: ListTile(
+                          leading: const Icon(Icons.cloud_off_outlined,
+                              color: FertaColors.error),
+                          title: const Text('Could not reach the assistant'),
+                          subtitle: const Text(
+                              'Check your connection or backend service, then retry.'),
+                          trailing: IconButton(
+                              tooltip: 'Retry',
+                              onPressed: sending || widget.service == null
+                                  ? null
+                                  : () => _ask(retryQuestion: failedQuestion),
+                              icon: const Icon(Icons.refresh)),
+                        ),
+                      ),
+                    if (diseasePhoto != null)
+                      Card(
+                        margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        child: Padding(
+                            padding: const EdgeInsets.all(10),
+                            child: Row(children: [
+                              ClipRRect(
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: Image.file(diseasePhoto!,
+                                      width: 64,
+                                      height: 64,
+                                      fit: BoxFit.cover)),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                  child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                    DropdownButton<String>(
+                                        value: diseaseCrop,
+                                        isExpanded: true,
+                                        items: const [
+                                          'Tomato',
+                                          'Rice',
+                                          'Cotton',
+                                          'Groundnut',
+                                          'Potato'
+                                        ]
+                                            .map((crop) => DropdownMenuItem(
+                                                value: crop, child: Text(crop)))
+                                            .toList(),
+                                        onChanged: (crop) => setState(() =>
+                                            diseaseCrop = crop ?? diseaseCrop)),
+                                    const Text(
+                                        'Photo analysis is not configured. This image stays on your device and was not uploaded.',
+                                        style: TextStyle(fontSize: 12)),
+                                  ])),
+                              IconButton(
+                                  tooltip: 'Remove photo',
+                                  onPressed: () =>
+                                      setState(() => diseasePhoto = null),
+                                  icon: const Icon(Icons.close)),
+                            ])),
+                      ),
                     if (lastQuestion != null)
                       TextButton.icon(
                         onPressed:
@@ -2132,6 +2294,11 @@ class _AssistantScreenState extends State<AssistantScreen> {
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
+                          IconButton.filledTonal(
+                            onPressed: _selectDiseasePhoto,
+                            tooltip: 'Choose plant photo',
+                            icon: const Icon(Icons.attach_file),
+                          ),
                           Expanded(
                             child: TextField(
                               controller: controller,
@@ -2388,7 +2555,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         child: Icon(Icons.notifications_none)),
                     title: const AppText('Notifications'),
                     subtitle: const AppText(
-                        'Calendar reminders will be enabled when the calendar integration is connected.'),
+                        'Local reminder preferences, scheduled tasks and history.'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => _open(NotificationsScreen(
                         calendarConnected: widget.calendarConnected,
@@ -2398,7 +2565,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ]);
 }
 
-class NotificationsScreen extends StatelessWidget {
+class NotificationsScreen extends StatefulWidget {
   final bool calendarConnected;
   final bool remindersConnected;
   final FarmingCalendarService? calendarService;
@@ -2413,51 +2580,168 @@ class NotificationsScreen extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const AppText('Notification settings')),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Card(
-            child: ListTile(
-              leading: Icon(calendarConnected
-                  ? Icons.notifications_active_outlined
-                  : Icons.notifications_off_outlined),
-              title: const AppText('On-device calendar'),
-              subtitle:
-                  AppText(calendarConnected ? 'Connected' : 'Not connected'),
-            ),
-          ),
-          Card(
-            child: ListTile(
-              leading: Icon(remindersConnected
-                  ? Icons.notifications_active
-                  : Icons.notifications_off),
-              title: const AppText('Farming reminders'),
-              subtitle:
-                  AppText(remindersConnected ? 'Connected' : 'Not connected'),
-            ),
-          ),
-          const AppText(
-              'Local reminders use Android or iOS notifications and work without push services. Permission is requested when you schedule a reminder. Notification categories, an in-app read history, and cloud delivery are not configured.'),
-          if (calendarConnected)
-            Padding(
-              padding: const EdgeInsets.only(top: 16),
-              child: FilledButton.icon(
-                onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                        builder: (_) => CalendarScreen(
-                            calendarService: calendarService,
-                            reminderService: reminderService))),
-                icon: const Icon(Icons.calendar_month),
-                label: const AppText('Open farming calendar'),
-              ),
-            ),
-        ],
-      ),
-    );
+  State<NotificationsScreen> createState() => _NotificationsScreenState();
+}
+
+class _NotificationsScreenState extends State<NotificationsScreen> {
+  Map<String, bool> preferences = {};
+  List<Map<String, Object?>> history = [];
+  static const categories = {
+    'watering': 'Watering',
+    'fertilizer': 'Fertilizer',
+    'planting': 'Planting',
+    'harvesting': 'Harvesting',
+    'calendar_tasks': 'Calendar tasks',
+    'appointments': 'Appointments',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
   }
+
+  Future<void> _load() async {
+    final p = await LocalStore.instance.notificationPreferences();
+    final h = await LocalStore.instance.notificationHistory();
+    if (mounted)
+      setState(() {
+        preferences = p;
+        history = h;
+      });
+  }
+
+  Future<void> _clearHistory() async {
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+              title: const Text('Clear notification history?'),
+              content: const Text(
+                  'This removes saved history and cancels scheduled local reminders.'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('Keep')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text('Clear history'))
+              ],
+            ));
+    if (confirmed != true) return;
+    for (final row in history) {
+      await widget.reminderService
+          ?.cancelNotification(row['notification_id'] as int);
+    }
+    await LocalStore.instance.clearNotificationHistory();
+    await _load();
+  }
+
+  Future<void> _toggleCategory(String category, bool enabled) async {
+    await LocalStore.instance.setNotificationPreference(category, enabled);
+    if (!enabled && widget.reminderService != null) {
+      for (final row in history.where((item) =>
+          item['category'] == category && item['is_scheduled'] == 1)) {
+        await widget.reminderService!
+            .cancelNotification(row['notification_id'] as int);
+      }
+    }
+    await _load();
+  }
+
+  Future<void> _openHistoryItem(Map<String, Object?> item) async {
+    await LocalStore.instance.markNotificationRead(item['id'] as int);
+    final farmId = item['related_farm_id'] as int?;
+    final taskId = item['related_task_id'] as int?;
+    await _load();
+    if (farmId == null || !mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => CalendarScreen(
+              calendarService: widget.calendarService,
+              reminderService: widget.reminderService,
+              initialFarmId: farmId,
+              focusTaskId: taskId,
+            )));
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const AppText('Notification settings')),
+        body: ListView(padding: const EdgeInsets.all(20), children: [
+          const Card(
+              child: ListTile(
+                  leading: Icon(Icons.phone_android),
+                  title: Text('Local notifications'),
+                  subtitle: Text(
+                      'Reminders stay on this device. Remote push notifications are not configured.'))),
+          const Text('Reminder categories',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ...categories.entries.map((entry) => SwitchListTile(
+              title: Text(entry.value),
+              value: preferences[entry.key] ?? true,
+              onChanged: (value) => _toggleCategory(entry.key, value))),
+          Row(children: [
+            const Expanded(
+                child: Text('History',
+                    style:
+                        TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+            TextButton(
+                onPressed: history.any((row) => row['is_read'] == 0)
+                    ? () async {
+                        await LocalStore.instance.markAllNotificationsRead();
+                        await _load();
+                      }
+                    : null,
+                child: const Text('Mark all read')),
+            IconButton(
+                onPressed: history.isEmpty ? null : _clearHistory,
+                tooltip: 'Clear history',
+                icon: const Icon(Icons.delete_outline))
+          ]),
+          if (history.isEmpty)
+            const Card(
+                child: ListTile(
+                    leading: Icon(Icons.notifications_none),
+                    title: Text('No notification history yet'),
+                    subtitle:
+                        Text('Schedule a calendar reminder to see it here.'))),
+          ...history.map((row) => Card(
+                  child: ListTile(
+                leading: Icon(
+                    row['is_read'] == 1
+                        ? Icons.notifications_none
+                        : Icons.notifications_active,
+                    color: row['is_read'] == 1
+                        ? FertaColors.muted
+                        : FertaColors.forest),
+                title: Text(row['title'] as String),
+                subtitle: Text(
+                    '${categories[row['category']] ?? row['category']} · ${DateTime.parse(row['scheduled_for'] as String).toLocal()}${row['is_scheduled'] == 1 ? ' · scheduled' : ''}'),
+                trailing: row['is_read'] == 1
+                    ? null
+                    : IconButton(
+                        tooltip: 'Mark as read',
+                        icon: const Icon(Icons.mark_email_read_outlined),
+                        onPressed: () async {
+                          await LocalStore.instance
+                              .markNotificationRead(row['id'] as int);
+                          await _load();
+                        }),
+                onTap: () => _openHistoryItem(row),
+              ))),
+          if (widget.calendarConnected)
+            Padding(
+                padding: const EdgeInsets.only(top: 16),
+                child: FilledButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => CalendarScreen(
+                              calendarService: widget.calendarService,
+                              reminderService: widget.reminderService))),
+                  icon: const Icon(Icons.calendar_month),
+                  label: const AppText('Open farming calendar'),
+                )),
+        ]),
+      );
 }
 
 class FarmManagementScreen extends StatefulWidget {
@@ -3984,6 +4268,23 @@ class _TerraceGardeningScreenState extends State<TerraceGardeningScreen> {
               (v) => experience = v),
           _choice('Budget', budget, ['Low', 'Moderate', 'Flexible'],
               (v) => budget = v),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Your starting plan',
+                        style: TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    Text('$space · $sunlight · $experience · $budget budget'),
+                    const SizedBox(height: 6),
+                    const Text(
+                        'Start with a manageable number of containers, observe sunlight and drainage, and confirm planting dates with a local seasonal source.'),
+                  ]),
+            ),
+          ),
           const SizedBox(height: 16),
           Card(
               child: Padding(
@@ -3995,6 +4296,20 @@ class _TerraceGardeningScreenState extends State<TerraceGardeningScreen> {
                             style: TextStyle(
                                 fontSize: 18, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 6),
+                        TweenAnimationBuilder<double>(
+                          tween: Tween(
+                              begin: 0, end: checked.length / steps.length),
+                          duration: const Duration(milliseconds: 300),
+                          builder: (context, value, _) =>
+                              LinearProgressIndicator(
+                                  value: value,
+                                  minHeight: 7,
+                                  borderRadius: BorderRadius.circular(8)),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                            '${checked.length} of ${steps.length} steps complete',
+                            style: Theme.of(context).textTheme.bodySmall),
                         ...steps.map((step) => CheckboxListTile(
                             contentPadding: EdgeInsets.zero,
                             value: checked.contains(step),
